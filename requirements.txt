@@ -12,7 +12,11 @@ langgraph-checkpoint-redis>=0.0.1
 # ── Busca web (câmbio) ────────────────────────────────────────────────────────
 tavily-python>=0.3.0
 
-# ── Interface ─────────────────────────────────────────────────────────────────
+# ── API (bridge FastAPI → LangGraph) ─────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# ── Interface legada (Streamlit, mantida para compatibilidade) ────────────────
 streamlit>=1.40.0
 
 # ── Utilitários ───────────────────────────────────────────────────────────────

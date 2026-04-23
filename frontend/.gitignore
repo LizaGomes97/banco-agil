@@ -1,0 +1,51 @@
+# Dependências
+node_modules/
+
+# Build e cache do Vite
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# Variáveis de ambiente (não versionar segredos)
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testes e cobertura
+coverage/
+*.lcov
+.nyc_output/
+
+# Ferramentas e IDEs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# TypeScript (cache incremental opcional)
+*.tsbuildinfo
+
+# Misc
+.cache/
+.turbo/
+*.pem
+
+# Arquivos de contexto/imports (não versionar PDFs e documentos locais)
+src/imports/

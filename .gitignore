@@ -37,3 +37,11 @@ Thumbs.db
 
 # ── Dados sensíveis ───────────────────────────────────────────────────────────
 data/leads.csv
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+# O frontend/  tem seu próprio .gitignore — aqui só reforçamos o essencial
+frontend/node_modules/
+frontend/.env
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo

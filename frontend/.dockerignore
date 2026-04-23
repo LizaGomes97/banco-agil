@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.env
+.env.local
+*.log
+.DS_Store
+guidelines
+ATTRIBUTIONS.md
+BACKEND_INTEGRATION.md
+CHANGELOG.md
+COMPONENTS_GUIDE.md
+DESIGN_SYSTEM.md
+README.md
+default_shadcn_theme.css
