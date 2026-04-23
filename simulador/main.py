@@ -32,7 +32,7 @@ except ImportError:
     HAS_RICH = False
 
 from .chat_client import BancoAgilClient
-from .config import BACKEND_URL, CLIENTES, ClienteSimulado
+from .config import BACKEND_URL, CLIENTES, DELAY_ENTRE_PERGUNTAS_S, ClienteSimulado
 from .evaluator import EvaluationResult, avaliar, avaliar_auth
 from .logging_setup import get_logger, setup_logging
 from .question_bank import (
@@ -82,6 +82,8 @@ async def cenario_auth_valida(cliente: ClienteSimulado, verbose: bool) -> List[E
 
         for item in get_perguntas_pos_auth():
             logger.debug("Pergunta [%s]: '%s'", item.categoria, item.pergunta[:80])
+            logger.debug("Aguardando %.1fs (rate limit Gemini)...", DELAY_ENTRE_PERGUNTAS_S)
+            await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
             resp = await api.chat(item.pergunta)
             ev = avaliar(resp, item, cliente.nome)
             resultados.append(ev)
@@ -114,6 +116,7 @@ async def cenario_auth_invalida_recuperacao(cliente: ClienteSimulado, verbose: b
         logger.info("Tentativa 1 (inválida): score=%.1f authenticated=%s reply='%s'",
                     ev.score, r.authenticated, r.reply[:100])
 
+        await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
         r2 = await api.autenticar(cliente)
         ev2 = avaliar_auth(r2, cliente.nome, esperava_sucesso=True, tentativa=2)
         resultados.append(ev2)
@@ -135,6 +138,8 @@ async def cenario_bloqueio_3_tentativas(cliente: ClienteSimulado, verbose: bool)
              else f"\n>> Bloqueio 3 tentativas: {cliente.nome}")
 
         for tentativa in range(1, 4):
+            if tentativa > 1:
+                await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
             r = await api.autenticar(cliente, usar_data_invalida=True)
             ev = avaliar_auth(r, cliente.nome, esperava_sucesso=False, tentativa=tentativa)
             resultados.append(ev)
@@ -180,6 +185,7 @@ async def cenario_guardrail(verbose: bool) -> List[EvaluationResult]:
 
         for item in get_perguntas_guardrail():
             logger.debug("Guardrail [%s]: '%s'", item.categoria, item.pergunta[:80])
+            await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
             resp = await api.chat(item.pergunta)
             ev = avaliar(resp, item, "Anônimo")
             resultados.append(ev)

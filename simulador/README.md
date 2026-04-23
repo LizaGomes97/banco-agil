@@ -24,9 +24,9 @@ main.py
 pip install httpx rich   # dependências do simulador
 ```
 
-O agente deve estar rodando:
+O agente deve estar rodando. Use `--reload-dir` para evitar que o uvicorn reinicie ao detectar mudanças no simulador:
 ```bash
-uvicorn api.main:app --reload
+uvicorn api.main:app --reload --reload-dir api --reload-dir src --port 8000
 ```
 
 ## Modos de execução
@@ -97,9 +97,12 @@ Baseados em `data/clientes.csv` — os mesmos dados que o agente usa para autent
 
 ```env
 SIMULADOR_BACKEND_URL=http://localhost:8000   # URL da API
-SIMULADOR_TIMEOUT=30                          # Timeout em segundos
+SIMULADOR_TIMEOUT=90                          # Timeout em segundos (Gemini pode demorar até 62s em retry)
+SIMULADOR_DELAY=5                             # Delay entre perguntas (respeita rate limit do Gemini free tier)
 SIMULADOR_REPORTS_DIR=simulador/reports       # Pasta de relatórios
 ```
+
+> **Gemini free tier**: limita ~15 RPM. Cada mensagem gera 2-3 chamadas LLM internas (classificador + agente + possível retry de contrato). Com `SIMULADOR_DELAY=5` cada pergunta ocupa ~7-10s total, mantendo o uso abaixo do limite.
 
 ## Relatórios gerados
 

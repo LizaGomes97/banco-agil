@@ -15,6 +15,11 @@ BACKEND_URL: str = os.getenv("SIMULADOR_BACKEND_URL", "http://localhost:8000")
 TIMEOUT_SEGUNDOS: float = float(os.getenv("SIMULADOR_TIMEOUT", "90"))
 MAX_TENTATIVAS_AUTH: int = 3          # deve coincidir com a regra do frontend/agente
 
+# Pausa entre perguntas — necessário para respeitar o rate limit do Gemini free tier
+# (15 RPM, cada mensagem pode gerar 2-3 chamadas LLM internamente)
+# Mínimo recomendado: 5s. Reduza só se usar API paga.
+DELAY_ENTRE_PERGUNTAS_S: float = float(os.getenv("SIMULADOR_DELAY", "5"))
+
 # ── Relatórios ────────────────────────────────────────────────────────────────
 REPORTS_DIR: str = os.getenv("SIMULADOR_REPORTS_DIR", "simulador/reports")
 
