@@ -20,6 +20,7 @@ Todas as decisões técnicas relevantes do projeto Banco Ágil são registradas 
 | [ADR-012](ADR-012-resiliencia-modelo.md) | Resiliência com Fallback de Modelo | Aceito | 2026-04 |
 | [ADR-013](ADR-013-pipeline-flash-pro.md) | Pipeline Flash → Pro para Crédito | Aceito | 2026-04 |
 | [ADR-014](ADR-014-contratos-resposta.md) | Sistema de Contratos de Resposta (Anti-Alucinação) | Aceito | 2026-04 |
+| [ADR-015](ADR-015-guardrails.md) | Sistema de Guardrails por Domínio e Criticidade | Aceito | 2026-04 |
 
 ## Como criar um novo ADR
 

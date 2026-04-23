@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from src.config import REDIS_DB, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
 from src.graph import get_graph
 from src.infrastructure.logging_config import setup_logging, tail_log
+from src.middleware.guardrails import Severidade, input_runner, output_runner
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -139,6 +140,23 @@ async def chat(req: ChatRequest):
 
     logger.info("[CHAT] session=%s | msg=%.80s", sid[:8], req.message)
 
+    # ── Guardrails de INPUT ─────────────────────────────────────────────────
+    input_check = input_runner.executar(req.message)
+    if not input_check.aprovado and input_check.severidade in (
+        Severidade.CRITICO, Severidade.ALTO
+    ):
+        logger.warning(
+            "[CHAT] input bloqueado | severidade=%s motivo=%s",
+            input_check.severidade,
+            input_check.motivo,
+        )
+        return ChatResponse(
+            reply=input_check.mensagem_cliente or "Não consigo processar essa solicitação.",
+            conversation_id=sid,
+            authenticated=False,
+            encerrado=False,
+        )
+
     try:
         result = graph.invoke(
             {"messages": [HumanMessage(content=req.message)]},
@@ -170,6 +188,18 @@ async def chat(req: ChatRequest):
 
     if not reply:
         reply = "Desculpe, não consegui processar sua solicitação. Tente novamente."
+
+    # ── Guardrails de OUTPUT ────────────────────────────────────────────────
+    output_check = output_runner.executar(reply)
+    if not output_check.aprovado and output_check.severidade in (
+        Severidade.CRITICO, Severidade.ALTO
+    ):
+        logger.warning(
+            "[CHAT] output bloqueado | severidade=%s motivo=%s",
+            output_check.severidade,
+            output_check.motivo,
+        )
+        reply = output_check.mensagem_cliente or "Não consigo processar essa solicitação."
 
     # Atualiza metadados da sessão no Redis
     try:
