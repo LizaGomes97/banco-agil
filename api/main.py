@@ -15,15 +15,16 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis as redis_lib
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
 from src.config import REDIS_DB, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
 from src.graph import get_graph
+from src.infrastructure.logging_config import setup_logging, tail_log
 
-logging.basicConfig(level=logging.INFO)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
@@ -120,6 +121,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     conversation_id: str
+    authenticated: bool
+    encerrado: bool
 
 
 class CreateConversationRequest(BaseModel):
@@ -134,22 +137,36 @@ async def chat(req: ChatRequest):
     sid = req.conversation_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": sid}}
 
+    logger.info("[CHAT] session=%s | msg=%.80s", sid[:8], req.message)
+
     try:
         result = graph.invoke(
             {"messages": [HumanMessage(content=req.message)]},
             config=config,
         )
     except Exception as exc:
-        logger.error("Erro ao invocar grafo: %s", exc, exc_info=True)
+        logger.error("[CHAT] Erro ao invocar grafo: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro interno do agente: {exc}") from exc
 
-    # Extrai última AIMessage como resposta
-    msgs = result.get("messages", [])
-    reply = ""
-    for m in reversed(msgs):
-        if isinstance(m, AIMessage) and m.content:
-            reply = m.content
-            break
+    # Lê o contrato explícito de saída dos agentes (resposta_final).
+    reply = (result.get("resposta_final") or "").strip()
+    logger.debug("[CHAT] resposta_final bruta: %.200s", reply or "(vazio)")
+
+    # Fallback defensivo: se resposta_final não foi setado, extrai da última AIMessage.
+    if not reply:
+        logger.warning("[CHAT] resposta_final vazia — usando fallback via messages")
+        msgs = result.get("messages", [])
+        for m in reversed(msgs):
+            if not isinstance(m, AIMessage):
+                continue
+            if getattr(m, "tool_calls", None) or m.additional_kwargs.get("tool_calls"):
+                logger.debug("[CHAT] fallback: pulando AIMessage com tool_calls")
+                continue
+            content = (m.content or "").strip()
+            if content:
+                reply = content
+                logger.debug("[CHAT] fallback: usando content=%.100s", content)
+                break
 
     if not reply:
         reply = "Desculpe, não consegui processar sua solicitação. Tente novamente."
@@ -165,7 +182,10 @@ async def chat(req: ChatRequest):
     except Exception as e:
         logger.warning("Não foi possível salvar metadados da sessão: %s", e)
 
-    return ChatResponse(reply=reply, conversation_id=sid)
+    authenticated = bool(result.get("cliente_autenticado"))
+    encerrado = bool(result.get("encerrado"))
+    logger.info("[CHAT] authenticated=%s encerrado=%s reply=%.60s", authenticated, encerrado, reply)
+    return ChatResponse(reply=reply, conversation_id=sid, authenticated=authenticated, encerrado=encerrado)
 
 
 @app.get("/api/conversations")
@@ -232,3 +252,17 @@ async def get_conversation(conversation_id: str):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "Banco Ágil – Agente IA"}
+
+
+@app.get("/api/debug/logs")
+async def get_logs(n: int = Query(default=100, ge=1, le=2000)):
+    """Retorna as últimas N linhas do log da aplicação.
+
+    Acesse em desenvolvimento: http://localhost:8000/api/debug/logs
+    Útil para diagnóstico sem precisar abrir o terminal do servidor.
+    """
+    lines = tail_log(n)
+    return {
+        "total_lines": len(lines),
+        "lines": lines,
+    }

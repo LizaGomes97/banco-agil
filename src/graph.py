@@ -14,7 +14,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from src.agents.cambio import no_cambio
 from src.agents.credito import no_credito
 from src.agents.entrevista import no_entrevista
-from src.agents.triagem import no_triagem
+from src.agents.triagem import no_triagem  # noqa: E402 — módulos com __init__.py
 from src.config import GEMINI_API_KEY, GEMINI_MODEL
 from src.infrastructure.checkpointer import criar_checkpointer
 from src.infrastructure.qdrant_memory import salvar_interacao
@@ -91,20 +91,21 @@ def router(state: BancoAgilState) -> str:
     Função determinística — não usa LLM. Baseia-se exclusivamente
     nos campos do estado. Ver ADR-003 para justificativa.
 
+    Contrato de saída (resposta_final):
+      resposta_final = str  → agente produziu resposta → END
+      resposta_final = None → agente apenas roteou    → continuar roteamento
+
     Fluxo de encerramento:
       encerrado=True + memoria_salva=False → salvar_memoria → END
       encerrado=True + memoria_salva=True  → END
     """
-    from langchain_core.messages import AIMessage
-
     if state.get("encerrado"):
         if not state.get("memoria_salva"):
             return "salvar_memoria"
         return END
 
-    # ── Turno encerrado: agente produziu resposta ─────────────────────────────
-    msgs = state.get("messages", [])
-    if msgs and isinstance(msgs[-1], AIMessage):
+    # ── Contrato explícito: agente sinalizou que tem uma resposta final ───────
+    if state.get("resposta_final") is not None:
         return END
 
     # ── Turno em andamento: rotear para o agente correto ─────────────────────

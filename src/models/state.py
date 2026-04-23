@@ -48,3 +48,14 @@ class BancoAgilState(TypedDict):
     """True após o nó salvar_memoria ter persistido o resumo da sessão no Qdrant.
     Evita dupla gravação caso o router passe pelo nó mais de uma vez.
     """
+
+    resposta_final: Optional[str]
+    """Contrato explícito de saída dos agentes (padrão Result<T>).
+
+    - Agente tem resposta para o usuário  → str com o texto
+    - Agente apenas roteia / processa     → None
+
+    O router usa este campo para decidir se o turno acabou.
+    A API lê este campo diretamente — sem precisar inferir pelo histórico de msgs.
+    Cada nó SEMPRE retorna este campo (str ou None) para resetar entre turnos.
+    """

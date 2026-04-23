@@ -1,95 +1,168 @@
-# Diagrama: Modelo de Dados
+# Modelo de Dados — Banco Ágil
 
-**Data:** 2026-04-22  
-**Versão:** 1.0  
-**Referências:** [ADR-005](../decisions/ADR-005-calculo-score.md) · [ADR-007](../decisions/ADR-007-estrutura-codigo.md)
-
----
-
-## Entidades e Relacionamentos
+## Entidades do sistema
 
 ```mermaid
 erDiagram
     CLIENTE {
-        string cpf PK "Ex: 123.456.789-00"
+        string cpf PK
         string nome
         date data_nascimento
-        float limite_credito "Limite atual em R$"
-        int score "Score de crédito (0-1300)"
-    }
-
-    SOLICITACAO_AUMENTO {
-        string id PK "UUID gerado"
-        string cpf FK
-        float limite_atual
-        float limite_solicitado
-        string status "aprovado | reprovado | pendente"
-        datetime criado_em
+        float limite_credito
+        int score
     }
 
     SESSAO_REDIS {
-        string thread_id PK "session_id do Streamlit"
-        json messages "Histórico completo de mensagens"
-        json cliente_autenticado "Dados do cliente após auth"
-        string agente_ativo "triagem|credito|entrevista|cambio"
-        int tentativas_auth "Contador: máx 3"
-        bool encerrado "Flag de fim de conversa"
-        datetime expires_at "TTL 30 minutos"
+        string thread_id PK
+        json   state_snapshot
+        string updated_at
     }
 
-    CLIENTE ||--o{ SOLICITACAO_AUMENTO : "faz"
-    CLIENTE ||--o| SESSAO_REDIS : "tem sessão ativa"
+    MEMORIA_QDRANT {
+        uuid   id PK
+        string cpf FK
+        string resumo
+        vector embedding
+        list   agentes_usados
+        string resultado
+        string created_at
+    }
+
+    CLIENTE ||--o{ SESSAO_REDIS : "autenticado em"
+    CLIENTE ||--o{ MEMORIA_QDRANT : "possui histórico"
 ```
 
 ---
 
-## Estrutura dos CSVs
+## `BancoAgilState` — Estado compartilhado LangGraph
 
-### `clientes.csv`
-
-| Campo | Tipo | Exemplo | Observação |
-|-------|------|---------|------------|
-| `cpf` | string | `123.456.789-00` | Chave primária, com máscara |
-| `nome` | string | `João Silva` | Nome completo |
-| `data_nascimento` | date | `1990-01-15` | Formato ISO: YYYY-MM-DD |
-| `limite_credito` | float | `5000.00` | Limite atual em R$ |
-| `score` | int | `650` | Score atual (0–1300) |
-
-### `solicitacoes_aumento_limite.csv`
-
-| Campo | Tipo | Exemplo | Observação |
-|-------|------|---------|------------|
-| `id` | string | `uuid4` | Gerado automaticamente |
-| `cpf` | string | `123.456.789-00` | FK para clientes.csv |
-| `limite_atual` | float | `5000.00` | Limite no momento da solicitação |
-| `limite_solicitado` | float | `10000.00` | Novo limite pedido |
-| `status` | string | `aprovado` | aprovado \| reprovado \| pendente |
-| `criado_em` | datetime | `2026-04-22T10:30:00` | Timestamp ISO 8601 |
-
----
-
-## Estado da Conversa — `BancoAgilState`
-
-Estrutura TypedDict que trafega pelo grafo LangGraph (ver [ADR-003](../decisions/ADR-003-handoff-agentes.md)):
+Definido em `src/models/state.py`. Cada turno carrega e persiste este objeto via Redis.
 
 ```python
 class BancoAgilState(TypedDict):
+
     messages: Annotated[list[BaseMessage], add_messages]
-    cliente_autenticado: Optional[dict]   # None até autenticar
-    agente_ativo: str                     # "triagem" | "credito" | "entrevista" | "cambio"
-    tentativas_auth: int                  # 0, 1, 2 — encerra na 3ª falha
-    encerrado: bool                       # True = encerra o loop
+    # Reducer: add_messages (acumula, não substitui)
+    # Contém: HumanMessage, AIMessage, ToolMessage
+
+    cliente_autenticado: Optional[dict]
+    # None até autenticação bem-sucedida.
+    # Após: {"cpf": str, "nome": str, "limite_credito": float, "score": int,
+    #         "data_nascimento": str}
+
+    agente_ativo: str
+    # "triagem" | "credito" | "entrevista" | "cambio"
+    # Determina o destino do router quando resposta_final=None
+
+    tentativas_auth: int
+    # Conta falhas de autenticação consecutivas.
+    # Ao atingir MAX_TENTATIVAS_AUTH (3): encerrado=True
+
+    encerrado: bool
+    # True → router vai para salvar_memoria → END
+    # Qualquer agente pode setar este campo
+
+    memoria_cliente: Optional[list]
+    # Resumos semânticos das sessões anteriores deste CPF (via Qdrant)
+    # Preenchido na autenticação; injetado no contexto dos agentes
+
+    memoria_salva: bool
+    # True após salvar_memoria ter executado com sucesso
+    # Evita dupla gravação ao Qdrant
+
+    resposta_final: Optional[str]
+    # Contrato de saída dos agentes:
+    #   str  → agente tem resposta → router vai para END
+    #   None → agente apenas roteou → router continua avaliando
+    # A API lê este campo diretamente (sem parsear messages)
+```
+
+### Ciclo de vida por campo
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> messages : HumanMessage do usuário
+
+    state messages {
+        direction TB
+        HumanMessage --> AIMessage
+        AIMessage --> ToolMessage : se tool call
+        ToolMessage --> AIMessage : resposta final
+    }
+
+    [*] --> cliente_autenticado : None (início)
+    cliente_autenticado --> AuthOk : triagem detecta CPF+data
+    AuthOk --> cliente_autenticado : dict com dados do cliente
+
+    [*] --> resposta_final : None (sempre reseta)
+    resposta_final --> str : agente tem resposta
+    resposta_final --> None : agente apenas roteia
+
+    [*] --> encerrado : False
+    encerrado --> True : "encerrar"|3 falhas auth|qualquer agente
 ```
 
 ---
 
-## Fluxo de dados (score)
+## Tabela CSV de Clientes
+
+Localização: `data/clientes.csv`
+
+```
+cpf,nome,data_nascimento,limite_credito,score
+123.456.789-00,Ana Silva,1990-01-15,5000.00,650
+987.654.321-00,Carlos Mendes,1985-07-22,3000.00,320
+456.789.123-00,Maria Oliveira,1995-03-10,8000.00,780
+321.654.987-00,João Santos,1978-11-30,1500.00,180
+789.123.456-00,Fernanda Lima,2000-05-05,10000.00,850
+```
+
+Acesso via `src/tools/csv_repository.py`:
+- `buscar_cliente(cpf, data_nascimento)` — autenticação
+- `atualizar_score(cpf, novo_score)` — após entrevista financeira
+
+---
+
+## Fluxo de dados: autenticação e enriquecimento
 
 ```mermaid
-graph LR
-    Entrevista -->|"coleta dados via LLM"| Dados["renda, emprego\ndependentes, dívidas"]
-    Dados -->|"chama @tool"| ScoreCalc["score_calculator.py"]
-    ScoreCalc -->|"fórmula Python\ndeterminística"| Score["score: int"]
-    Score -->|"atualiza"| CSV["clientes.csv\ncoluna: score"]
-    Score -->|"armazena em"| State["BancoAgilState\n.score_calculado"]
+sequenceDiagram
+    participant T as Triagem
+    participant CSV as clientes.csv
+    participant Q as Qdrant
+    participant State as BancoAgilState
+
+    T->>CSV: buscar_cliente(cpf, data)
+    CSV-->>T: Cliente(cpf, nome, limite, score)
+    T->>Q: buscar_memorias(cpf, consulta, top_k=3)
+    Q-->>T: ["Cliente consultou câmbio em 04/2026...", ...]
+    T->>State: cliente_autenticado={...}, memoria_cliente=[...]
+    Note over State: Todos os agentes\nusam esses campos\nno contexto LLM
+```
+
+---
+
+## Fluxo de dados: entrevista e atualização de score
+
+```mermaid
+sequenceDiagram
+    participant E as Entrevista
+    participant LLM as Gemini Flash
+    participant Calc as score_calculator.py
+    participant CSV as clientes.csv
+    participant State as BancoAgilState
+    participant Contract as contract.py
+
+    E->>LLM: Coleta renda, emprego, dependentes, dívidas
+    LLM-->>E: tool_call calcular_score_credito(args)
+    E->>Calc: calcular_score_credito(renda, tipo_emprego, dependentes, dividas)
+    Calc-->>E: {"score": 520, "detalhes": {...}}
+    E->>CSV: atualizar_score(cpf, 520)
+    E->>State: cliente_autenticado.score=520, agente_ativo="credito"
+    E->>LLM: Formular resposta com novo score
+    LLM-->>E: "Seu novo score é 520, Ana!"
+    E->>Contract: contrato_resultado_entrevista(520).validar(resposta)
+    Contract-->>E: (True, []) — contrato satisfeito
+    E->>State: resposta_final="Seu novo score é 520, Ana!"
 ```

@@ -3,7 +3,8 @@ import { ConversationSidebar } from './components/ConversationSidebar';
 import { AppHeader } from './components/AppHeader';
 import { ChatMessage } from './components/ChatMessage';
 import { MessageComposer } from './components/MessageComposer';
-import { EmptyState } from './components/EmptyState';
+import { AuthCard } from './components/AuthCard';
+import { ContactCard } from './components/ContactCard';
 import { TypingIndicator } from './components/TypingIndicator';
 import { SkeletonLoader } from './components/SkeletonLoader';
 import { Loader2 } from 'lucide-react';
@@ -16,6 +17,11 @@ import {
   apiMessageToUi,
   type SessionSummary,
 } from './services/api';
+
+/** Formata CPF + data para a mensagem enviada ao agente de triagem. */
+function buildAuthMessage(cpf: string, dataNasc: string): string {
+  return `CPF: ${cpf}\nData de nascimento: ${dataNasc}`;
+}
 
 interface Message {
   id: string;
@@ -44,6 +50,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [conversationLoading, setConversationLoading] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isEncerrado, setIsEncerrado] = useState(false);
 
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -131,6 +139,8 @@ export default function App() {
       setActiveConversationId(conv.id);
       setConversationId(conv.id);
       setMessages([]);
+      setIsAuthenticated(false);
+      setIsEncerrado(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.error(msg);
@@ -162,6 +172,13 @@ export default function App() {
       if (result.conversationId && result.conversationId !== conversationId) {
         setConversationId(result.conversationId);
         setActiveConversationId(result.conversationId);
+      }
+
+      if (result.authenticated) {
+        setIsAuthenticated(true);
+      }
+      if (result.encerrado) {
+        setIsEncerrado(true);
       }
 
       const assistantMsg: Message = {
@@ -225,12 +242,27 @@ export default function App() {
           <div className="max-w-3xl mx-auto space-y-4">
             {conversationLoading ? (
               <SkeletonLoader />
-            ) : messages.length === 0 ? (
-              <EmptyState onSuggestionClick={handleSendMessage} />
             ) : (
-              messages.map((msg) => (
-                <ChatMessage key={msg.id} message={msg} />
-              ))
+              <>
+                {/* Mensagens anteriores (erros de auth, histórico) */}
+                {messages.map((msg) => (
+                  <ChatMessage key={msg.id} message={msg} />
+                ))}
+
+                {/* Atendimento encerrado: mostra canais de contato */}
+                {isEncerrado && !isAuthenticated && <ContactCard />}
+
+                {/* AuthCard: aparece na tela inicial E após falha (enquanto não encerrado) */}
+                {!isAuthenticated && !isEncerrado && (
+                  <AuthCard
+                    onSubmit={(cpf, dataNasc) =>
+                      handleSendMessage(buildAuthMessage(cpf, dataNasc))
+                    }
+                    disabled={isLoading}
+                    retry={messages.length > 0}
+                  />
+                )}
+              </>
             )}
 
             {isLoading && (
@@ -246,16 +278,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* Composer */}
-        <div className="border-t border-border bg-background/80 backdrop-blur-sm px-4 py-3">
-          <div className="max-w-3xl mx-auto">
-            <MessageComposer
-              onSend={handleSendMessage}
-              disabled={isLoading}
-              placeholder="Fale com o assistente do Banco Ágil..."
-            />
+        {/* Composer — oculto quando atendimento encerrado sem autenticação */}
+        {(!isEncerrado || isAuthenticated) && (
+          <div className="border-t border-border bg-background/80 backdrop-blur-sm px-4 py-3">
+            <div className="max-w-3xl mx-auto">
+              <MessageComposer
+                onSend={handleSendMessage}
+                disabled={isLoading}
+                placeholder="Fale com o assistente do Banco Ágil..."
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Overlay do sidebar em mobile */}

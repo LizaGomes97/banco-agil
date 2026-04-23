@@ -1,297 +1,270 @@
-# Banco Ágil — Agente Bancário Inteligente
+# Banco Ágil — Agente de Atendimento com IA
 
-Sistema de atendimento ao cliente para o banco digital fictício **Banco Ágil**, construído com múltiplos agentes de IA orquestrados por **LangGraph**. O cliente interage com um único chat e os agentes trabalham nos bastidores, fazendo handoffs imperceptíveis conforme o assunto muda.
+Assistente bancário digital construído com **LangGraph**, **Gemini** e **React**, desenvolvido como desafio técnico para a posição de Desenvolvedor de Agentes de IA.
 
----
+## Visão geral
 
-## Visão Geral
+O sistema simula o atendimento digital de um banco moderno. Um cliente interage com um único assistente via chat web que, de forma transparente, roteia cada intenção para o agente especialista correto — sem que o cliente perceba as transições internas.
 
-O Banco Ágil oferece quatro agentes especializados que colaboram em um único grafo de estados:
-
-| Agente | Responsabilidade |
-|--------|-----------------|
-| **Triagem** | Autentica o cliente (CPF + data de nascimento) e identifica a intenção |
-| **Crédito** | Consulta limite, processa solicitações de aumento e verifica score |
-| **Entrevista de Crédito** | Conduz entrevista financeira e recalcula score com fórmula ponderada |
-| **Câmbio** | Consulta cotações em tempo real via Tavily |
-
-**Diferenciais técnicos implementados além do escopo mínimo:**
-- Router de intenção baseado em LLM (sem keyword matching)
-- Memória semântica por cliente no Qdrant (histórico entre sessões)
-- Persistência de sessão com Redis + LangGraph checkpointing
-- Pipeline de decisão de crédito em duas fases (Flash coleta → Pro decide)
-- Formulário de captura de leads para clientes não encontrados na base
-
----
-
-## Arquitetura do Sistema
-
-### Grafo LangGraph
+**Fluxo principal:**
 
 ```
-                    ┌─────────────────┐
-  Usuário ──────▶  │  agente_triagem │ ◀──────────────────────┐
-                    └────────┬────────┘                        │
-                             │ autenticado + intenção          │ troca de assunto
-                    ┌────────▼────────┐                        │
-                    │     router()    │ ── encerrado ──▶ [salvar_memoria] ──▶ END
-                    └────────┬────────┘
-            ┌────────────────┼────────────────┐
-            ▼                ▼                ▼
-    ┌──────────────┐  ┌────────────┐  ┌─────────────┐
-    │agente_credito│  │agente_     │  │agente_cambio│
-    │              │  │entrevista  │  │             │
-    └──────┬───────┘  └─────┬──────┘  └─────────────┘
-           │ score baixo    │ recalcular
-           └────────────────┘
+Identificação do cliente (AuthCard)
+       ↓
+Agente de Triagem — autenticação CPF + data de nascimento
+       ↓
+Router inteligente (classificador LLM + resposta_final)
+       ↓
+┌──────────────┬──────────────┬──────────────────────┐
+│   Crédito    │    Câmbio    │  Entrevista Financeira│
+│ Flash → Pro  │  Tool call   │  Coleta + Recalcula   │
+└──────────────┴──────────────┴──────────────────────┘
+       ↓
+salvar_memoria (Qdrant) → END
 ```
-
-### Fluxo de dados
-
-```
-Mensagem do usuário
-    │
-    ├─▶ [Redis] Recupera checkpoint da sessão (LangGraph)
-    │
-    ├─▶ [agente_triagem]
-    │       ├─▶ Se não autenticado: extrai CPF + data → busca clientes.csv
-    │       │       └─▶ Se autenticado: busca memórias no Qdrant (por CPF)
-    │       └─▶ Se autenticado: [LLM] classifica intenção → router()
-    │
-    ├─▶ [agente_credito / agente_entrevista / agente_cambio]
-    │       ├─▶ Injeta dados do cliente + memórias no system prompt
-    │       ├─▶ Executa tools (CSV, score, Tavily) inline
-    │       └─▶ Retorna AIMessage
-    │
-    ├─▶ [Redis] Salva checkpoint atualizado
-    │
-    └─▶ Se encerrado: [salvar_memoria] → gera resumo LLM → grava no Qdrant
-```
-
-### Persistência e memória
-
-| Componente | Uso |
-|---|---|
-| **Redis** | Checkpointing do LangGraph (estado da conversa por sessão) |
-| **Qdrant** | Memória semântica por cliente — busca pelo CPF nos metadados |
-| **clientes.csv** | Base de autenticação e scores |
-| **solicitacoes_aumento_limite.csv** | Registro de pedidos de aumento |
-| **leads.csv** | Clientes não encontrados que preencheram o formulário |
 
 ---
 
-## Funcionalidades Implementadas
+## Arquitetura
 
-### Agente de Triagem
-- Saudação inicial e coleta de CPF + data de nascimento
-- Autenticação contra `clientes.csv` (até 3 tentativas, depois encerra)
-- Identificação de intenção via LLM (não keyword matching)
-- Handoff imperceptível: o cliente não sabe que "trocou de agente"
-- Busca de memórias semânticas do cliente no Qdrant após autenticação
+### Camadas
 
-### Agente de Crédito
-- Consulta de limite de crédito disponível
-- Solicitação de aumento: registra em `solicitacoes_aumento_limite.csv`
-- Verificação de score: aprovação automática se score ≥ 500
-- Rejeição com oferta de redirecionamento para Entrevista de Crédito
-
-### Agente de Entrevista de Crédito
-- Coleta estruturada: renda, tipo de emprego, despesas, dependentes, dívidas
-- Cálculo determinístico de score (Python puro, não LLM) com fórmula ponderada
-- Atualização do score em `clientes.csv`
-- Redirecionamento automático de volta ao Agente de Crédito
-
-### Agente de Câmbio
-- Consulta em tempo real via Tavily Search API
-- Execução de tool call inline (sem anunciar "vou verificar")
-- Suporte a qualquer moeda: dólar, euro, libra, iene etc.
-
-### Extras além do escopo
-- **Memória semântica por cliente (Qdrant)**: o agente "lembra" de interações anteriores
-- **Persistência de sessão (Redis)**: conversa continua após recarregar a página
-- **Formulário de leads**: clientes não cadastrados podem solicitar cadastro
-- **ADRs documentados**: 8 Architecture Decision Records explicando cada escolha
-
----
-
-## Desafios Enfrentados e Soluções
-
-### 1. GraphRecursionError — loop infinito no grafo
-**Problema:** O LangGraph continuava re-executando o mesmo nó após o agente responder, atingindo o limite de recursão (25 iterações).
-
-**Causa:** A função `router()` não detectava que o turno havia terminado, pois não verificava se a última mensagem era uma `AIMessage`.
-
-**Solução:** Adicionamos uma condição explícita no `router()`:
-```python
-if msgs and isinstance(msgs[-1], AIMessage):
-    return END
+```
+┌────────────────────────────────────────────────────┐
+│  Frontend React 18 + TypeScript + Vite + Tailwind  │
+│  AuthCard  ChatMessage  ContactCard  MessageComposer│
+└──────────────────────┬─────────────────────────────┘
+                       │ HTTP (Vite proxy → :8000)
+┌──────────────────────▼─────────────────────────────┐
+│  FastAPI Bridge  api/main.py                        │
+│  POST /api/chat   GET /api/conversations            │
+│  GET /api/debug/logs                               │
+└──────────────────────┬─────────────────────────────┘
+                       │ graph.invoke()
+┌──────────────────────▼─────────────────────────────┐
+│  LangGraph  src/graph.py                            │
+│  triagem → credito → entrevista → cambio            │
+│                              ↓                      │
+│  Router determinístico (resposta_final / encerrado) │
+│                              ↓                      │
+│  salvar_memoria → END                               │
+└────────────┬────────────────┬────────────────────────┘
+             │                │
+     ┌───────▼──────┐ ┌───────▼──────┐
+     │  Redis       │ │  Qdrant      │
+     │ Checkpoints  │ │ Memória      │
+     │  de estado   │ │ semântica    │
+     └──────────────┘ └──────────────┘
 ```
 
-### 2. Keyword matching frágil para intenção
-**Problema:** A frase "quero comprar dólares com meu crédito" era roteada incorretamente para o Agente de Crédito porque "crédito" aparecia na mensagem.
+### Persistência
 
-**Solução:** Substituímos o keyword matching por uma chamada focada ao LLM (`intent_classifier.py`) com `temperature=0` e `max_output_tokens=10`. O modelo classifica a intenção com muito mais precisão, incluindo uma regra de desempate câmbio > crédito.
-
-### 3. Agente anunciava a consulta antes de executar
-**Problema:** O Agente de Câmbio enviava uma mensagem dizendo "vou verificar a cotação" mas, como já havia consumido o turno, não conseguia enviar o resultado na mesma interação.
-
-**Solução:** Implementamos execução de tool calls inline dentro do nó LangGraph:
-1. LLM decide chamar a tool
-2. Tool executa imediatamente no mesmo nó
-3. LLM recebe o resultado e formula a resposta final
-4. O router vê apenas a AIMessage final (sem `tool_calls` pendentes)
-
-### 4. Triagem interferindo nos agentes especialistas
-**Problema:** Após a autenticação, cada mensagem passava pela triagem antes de chegar ao agente especialista, gerando respostas genéricas indesejadas.
-
-**Solução:** Implementamos "passthrough silencioso": se um agente especialista já está ativo e a mensagem não indica troca de assunto ou encerramento, a triagem retorna `{}` sem invocar LLM, e o router encaminha diretamente ao agente ativo.
+| Camada | Tecnologia | O que armazena |
+|---|---|---|
+| Estado da conversa | Redis (LangGraph Checkpointer) | Mensagens, campos de estado, thread_id |
+| Memória semântica | Qdrant | Resumos de sessões anteriores por CPF |
+| Dados de clientes | CSV local | CPF, nome, data de nascimento, limite, score |
 
 ---
 
-## Escolhas Técnicas e Justificativas
+## Funcionalidades
 
-| Decisão | Alternativas | Justificativa |
-|---------|-------------|---------------|
-| **LangGraph** | CrewAI, AutoGen | Grafo explícito de estados com edges condicionais — handoff imperceptível sem troca de contexto |
-| **Gemini 2.0 Flash** | GPT-4o, Claude | Free tier generoso, excelente em português, suporte nativo a tool calling |
-| **Redis** para checkpointing | Memória local, SQLite | Produção-ready, TTL configurável, suporte nativo no LangGraph |
-| **Qdrant** para memória semântica | ChromaDB, Pinecone | Self-hosted, filtros por metadados (isolamento por CPF), dimensão 3072 |
-| **Score em Python** | LLM calcular | Determinismo e auditabilidade — cálculo financeiro não pode ser não-determinístico |
-| **Tavily** para câmbio | SerpAPI, Alpha Vantage | Integração nativa com LangChain, free tier adequado |
-| **Streamlit** | Gradio, FastAPI+React | Desenvolvimento rápido, componentes de chat nativos, sidebar para features extras |
+### Autenticação com guardrail
+- AuthCard no frontend coleta CPF e data de nascimento via campos estruturados com máscara
+- Triagem verifica contra o CSV de clientes
+- Máximo de 3 tentativas; na falha final o chat é bloqueado e o `ContactCard` exibe canais de atendimento
 
-Para cada decisão, existe um ADR detalhado em `docs/decisions/`.
+### Contratos de resposta (anti-alucinação)
+- Cada agente define contratos em `contract.py` que validam se a resposta LLM contém os valores ground-truth (limite, score, cotação)
+- Se o contrato não for satisfeito, o framework faz retry com prompt corretivo
+- Último recurso: injeção programática do valor real
+
+### Roteamento via LLM
+- Classificador Gemini com `temperature=0` e `max_output_tokens=10` categoriza a intenção
+- Cache com TTL de 5 min para mensagens repetidas
+- Categorias: `credito | cambio | encerrar | nenhum`
+
+### Pipeline Flash → Pro (crédito)
+- **Flash**: coleta dados, aciona tools (`verificar_elegibilidade`, `registrar_pedido`)
+- **Pro**: recebe contexto completo e formula a decisão final com empatia
+- Consultas simples (saldo, limite) encurtam o pipeline usando só o Flash
+
+### Memória semântica contextual
+- Ao encerrar, o nó `salvar_memoria` gera um resumo via LLM e persiste no Qdrant
+- Na próxima autenticação, interações anteriores são injetadas no contexto de cada agente
+
+### Cotação de câmbio em tempo real
+- Agente de câmbio usa Tavily para buscar cotações reais (USD, EUR, GBP, JPY, CAD)
+- Contrato valida presença de valor `R$` na resposta
 
 ---
 
-## Tutorial de Execução
+## Decisões técnicas (ADRs)
+
+| # | Decisão | Status |
+|---|---|---|
+| ADR-001 | LangGraph como framework de orquestração | Aceito |
+| ADR-002 | Gemini 2.0 Flash como modelo principal | Aceito |
+| ADR-003 | Handoff implícito via grafo único | Aceito |
+| ADR-004 | Redis para persistência de estado | Aceito |
+| ADR-005 | Cálculo de score em Python (sem LLM) | Aceito |
+| ADR-006 | Tavily para cotação de câmbio | Aceito |
+| ADR-007 | Estrutura modular por agente | Aceito |
+| ADR-008 | Captura de leads pós-falha de auth | Aceito |
+| ADR-009 | Classificador de intenção via LLM | Aceito |
+| ADR-010 | Memória semântica com Qdrant | Aceito |
+| ADR-011 | Cache do classificador com TTL | Aceito |
+| ADR-012 | Resiliência com fallback de modelo | Aceito |
+| ADR-013 | Pipeline Flash → Pro para crédito | Aceito |
+| ADR-014 | Sistema de contratos de resposta | Aceito |
+
+Todos os ADRs em `docs/decisions/`.
+
+---
+
+## Estrutura do projeto
+
+```
+.
+├── api/
+│   └── main.py                  # FastAPI bridge (React → LangGraph)
+├── frontend/
+│   ├── src/app/
+│   │   ├── components/          # AuthCard, ContactCard, ChatMessage …
+│   │   ├── services/api.ts      # HTTP client (sendChatMessage, etc.)
+│   │   └── App.tsx              # Orquestração de estado do chat
+│   └── docs/ADR-001-stack-frontend.md
+├── src/
+│   ├── agents/
+│   │   ├── triagem/             # Autenticação e roteamento
+│   │   │   ├── agent.py
+│   │   │   ├── contract.py      # contrato_consulta_financeira
+│   │   │   ├── prompt.md
+│   │   │   └── __init__.py
+│   │   ├── credito/             # Pipeline Flash → Pro
+│   │   │   ├── agent.py
+│   │   │   ├── contract.py      # contrato_flash_direto, contrato_sintese_pro
+│   │   │   ├── prompt.md
+│   │   │   ├── prompt_pro.md
+│   │   │   └── __init__.py
+│   │   ├── cambio/              # Cotação de moedas via Tavily
+│   │   │   ├── agent.py
+│   │   │   ├── contract.py      # contrato_cotacao
+│   │   │   ├── prompt.md
+│   │   │   └── __init__.py
+│   │   └── entrevista/          # Coleta financeira e recálculo de score
+│   │       ├── agent.py
+│   │       ├── contract.py      # contrato_resultado_entrevista
+│   │       ├── prompt.md
+│   │       └── __init__.py
+│   ├── infrastructure/
+│   │   ├── response_contract.py # Framework de contratos (base)
+│   │   ├── logging_config.py    # Log centralizado + tail_log()
+│   │   ├── model_provider.py    # invocar_com_fallback, tiers fast/pro
+│   │   ├── checkpointer.py      # RedisSaver para LangGraph
+│   │   ├── qdrant_memory.py     # buscar_memorias, salvar_interacao
+│   │   └── cache.py             # CacheComTTL + decorator com_cache
+│   ├── models/
+│   │   └── state.py             # BancoAgilState (TypedDict)
+│   ├── tools/
+│   │   ├── csv_repository.py    # buscar_cliente, atualizar_score
+│   │   ├── intent_classifier.py # classificar_intencao (LLM + cache)
+│   │   ├── credit_tools.py      # verificar_elegibilidade, registrar_pedido
+│   │   ├── score_calculator.py  # calcular_score_credito, score_aprovado
+│   │   └── exchange_rate.py     # criar_tool_cambio (Tavily)
+│   ├── graph.py                 # StateGraph: nós, edges, router, singleton
+│   └── config.py                # Variáveis de ambiente
+├── data/
+│   └── clientes.csv             # Base de clientes de teste
+├── docs/
+│   ├── decisions/               # ADR-001 a ADR-014
+│   ├── diagrams/                # Arquitetura, grafo, modelo de dados
+│   └── flows/                   # Fluxos de autenticação, handoff, crédito
+├── .env.example
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Instalação e execução
 
 ### Pré-requisitos
 - Python 3.11+
-- Redis rodando na porta 6379
-- Qdrant rodando na porta 6333
-- Chave da API Gemini (Google AI Studio — free tier)
-- Chave da API Tavily (free tier)
+- Node.js 20+ / pnpm 9+
+- Redis e Qdrant acessíveis (local ou via SSH tunnel)
+- Chaves de API: `GOOGLE_API_KEY`, `TAVILY_API_KEY`
 
-### Opção A — Infraestrutura local com Docker
+### Backend
+
 ```bash
-# Redis
-docker run -d --name redis-banco-agil -p 6379:6379 redis:alpine
-
-# Qdrant
-docker run -d --name qdrant-banco-agil -p 6333:6333 qdrant/qdrant
-```
-
-### Opção B — VPS via SSH tunnel
-```bash
-ssh -i ~/.ssh/chave.key \
-    -L 5432:127.0.0.1:5432 \
-    -L 6333:127.0.0.1:6333 \
-    -L 6379:127.0.0.1:6379 \
-    usuario@ip-do-servidor -N
-```
-
-### Instalação
-```bash
-# 1. Clonar o repositório
-git clone <url-do-repo>
-cd agente-bancario-banco-agil
-
-# 2. Criar e ativar ambiente virtual
+# 1. Ambiente virtual e dependências
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-
-# 3. Instalar dependências
+.venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 
-# 4. Configurar variáveis de ambiente
+# 2. Variáveis de ambiente
 cp .env.example .env
-# Editar .env com suas chaves de API
+# Edite .env com suas chaves
+
+# 3. Iniciar API
+uvicorn api.main:app --reload --port 8000
 ```
 
-### Configuração do `.env`
-```env
-GEMINI_API_KEY=sua_chave_do_google_ai_studio
-GEMINI_MODEL=gemini-2.0-flash
-TAVILY_API_KEY=sua_chave_do_tavily
+### Frontend
 
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=           # deixar vazio se Redis local sem senha
-
-QDRANT_URL=http://localhost:6333
-QDRANT_API_KEY=           # deixar vazio se Qdrant local sem autenticação
-```
-
-### Inicializar collections do Qdrant
 ```bash
-python scripts/setup_qdrant.py
+cd frontend
+pnpm install
+pnpm dev        # Dev server em http://localhost:5173
+pnpm build      # Build de produção
 ```
 
-### Executar a aplicação
+### Túnel SSH (bancos na VPS)
+
 ```bash
-streamlit run app.py
+ssh -i ~/.ssh/sua-chave.key \
+  -L 5432:127.0.0.1:5432 \
+  -L 6333:127.0.0.1:6333 \
+  -L 6379:127.0.0.1:6379 \
+  usuario@seu-servidor -N
 ```
-
-Acesse `http://localhost:8501` no navegador.
-
-### Executar os testes
-```bash
-pytest tests/ -v
-```
-
-### Dados de teste (clientes cadastrados)
-
-| Nome | CPF | Data de Nascimento | Limite | Score |
-|------|-----|--------------------|--------|-------|
-| Ana Silva | 123.456.789-00 | 15/01/1990 | R$ 5.000 | 650 |
-| Bruno Costa | 987.654.321-00 | 22/08/1985 | R$ 3.000 | 420 |
-| Carla Mendes | 111.222.333-44 | 30/03/1995 | R$ 8.000 | 780 |
-
-> **Dica:** Use o CPF com máscara (`123.456.789-00`) ou só os números (`12345678900`) — o agente aceita os dois formatos.
 
 ---
 
-## Estrutura do Projeto
+## Dados de teste
 
+| CPF | Nome | Data de nascimento | Limite | Score |
+|---|---|---|---|---|
+| 123.456.789-00 | Ana Silva | 15/01/1990 | R$ 5.000 | 650 |
+| 987.654.321-00 | Carlos Mendes | 22/07/1985 | R$ 3.000 | 320 |
+| 456.789.123-00 | Maria Oliveira | 10/03/1995 | R$ 8.000 | 780 |
+| 321.654.987-00 | João Santos | 30/11/1978 | R$ 1.500 | 180 |
+| 789.123.456-00 | Fernanda Lima | 05/05/2000 | R$ 10.000 | 850 |
+
+---
+
+## Diagnóstico
+
+### Logs estruturados
+```bash
+# Tail dos últimos 100 logs via API
+curl http://localhost:8000/api/debug/logs?n=100
 ```
-banco-agil/
-├── app.py                          # Interface Streamlit
-├── requirements.txt
-├── .env.example
-├── data/
-│   ├── clientes.csv                # Base de clientes para autenticação
-│   └── solicitacoes_aumento_limite.csv
-├── src/
-│   ├── config.py                   # Variáveis de ambiente centralizadas
-│   ├── graph.py                    # StateGraph LangGraph + router()
-│   ├── agents/
-│   │   ├── triagem.py              # Autenticação e roteamento
-│   │   ├── credito.py              # Limite e aumento de crédito
-│   │   ├── entrevista.py           # Entrevista financeira e score
-│   │   └── cambio.py              # Cotação de moedas
-│   ├── prompts/                    # System prompts em Markdown
-│   ├── tools/
-│   │   ├── csv_repository.py       # CRUD nos arquivos CSV
-│   │   ├── score_calculator.py     # Cálculo determinístico de score
-│   │   ├── exchange_rate.py        # Tool Tavily para câmbio
-│   │   └── intent_classifier.py   # Classificador de intenção via LLM
-│   ├── models/
-│   │   ├── state.py                # BancoAgilState (TypedDict)
-│   │   └── schemas.py              # Dataclasses Cliente e Solicitação
-│   └── infrastructure/
-│       ├── checkpointer.py         # Redis checkpointer (fallback: MemorySaver)
-│       └── qdrant_memory.py        # Memória semântica por CPF
-├── docs/
-│   ├── decisions/                  # 8 ADRs — Architecture Decision Records
-│   ├── diagrams/                   # Diagramas Mermaid (arquitetura, grafo, dados)
-│   └── flows/                      # Fluxos de sequência por cenário
-├── scripts/
-│   └── setup_qdrant.py             # Inicializa collections no Qdrant
-└── tests/
-    ├── test_score_calculator.py
-    └── test_csv_repository.py
-```
+
+O sistema usa logging rotativo em `logs/banco_agil.log` com nível `DEBUG` configurável via `.env`.
+
+---
+
+## Diferenciais implementados
+
+| Funcionalidade | Detalhe |
+|---|---|
+| **Contratos de resposta** | Sistema de validação LLM com retry e fallback programático — previne alucinações de dados financeiros |
+| **Identidade única** | Nenhum agente menciona "transferência" ou "especialista"; filtro regex em todas as respostas |
+| **Estrutura modular** | Cada agente é um módulo Python independente com código, prompt e contrato co-localizados |
+| **Pipeline Flash→Pro** | Decisões de crédito têm fase rápida de coleta e fase de síntese com raciocínio rico |
+| **Memória semântica** | Histórico de sessões em Qdrant é injetado no contexto a cada novo atendimento |
+| **AuthCard** | Input estruturado com máscara de CPF e data — mais robusto que texto livre |
+| **ContactCard** | Após 3 falhas de auth, exibe canais reais de atendimento e bloqueia o chat |
+| **Logging de debug** | Endpoint `/api/debug/logs` permite diagnóstico sem acesso ao servidor |

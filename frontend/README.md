@@ -1,137 +1,132 @@
-# Banco Ágil — Frontend do Assistente IA
+# Banco Ágil — Frontend
 
-Interface web do agente financeiro do Banco Ágil. Construída com **React 18 + TypeScript + Vite + Tailwind CSS + shadcn/ui**, se comunica com o backend LangGraph via uma bridge **FastAPI**.
-
-> **Decisão técnica detalhada:** ver [`docs/ADR-001-stack-frontend.md`](./docs/ADR-001-stack-frontend.md)
-
----
+Interface web do assistente financeiro do Banco Ágil, construída com React 18, TypeScript e Tailwind CSS 4.
 
 ## Stack
 
-| Tecnologia        | Versão   | Papel                                      |
-|-------------------|----------|--------------------------------------------|
-| React             | 18.3     | Framework UI                               |
-| TypeScript        | —        | Tipagem estática                           |
-| Vite              | 6.3      | Build tool + proxy de desenvolvimento      |
-| Tailwind CSS      | 4.1      | Estilização utility-first                  |
-| shadcn/ui (Radix) | —        | Componentes acessíveis                     |
-| markdown-to-jsx   | 9.7      | Renderização de Markdown nas respostas     |
-| sonner            | 2.0      | Toasts de notificação                      |
-| lucide-react      | 0.487    | Ícones                                     |
-
----
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| React | 18 | UI declarativa com hooks |
+| TypeScript | 5 | Tipagem estática |
+| Vite | 6 | Build tool e dev server |
+| Tailwind CSS | 4 | Utilitários CSS |
+| shadcn/ui (Radix UI) | latest | Componentes acessíveis |
+| Lucide React | latest | Ícones |
+| Sonner | latest | Notificações toast |
+| pnpm | 9 | Gerenciador de pacotes |
 
 ## Pré-requisitos
 
-- **Node.js** ≥ 18
-- **pnpm** ≥ 9 (`npm install -g pnpm`)
-- Backend FastAPI rodando em `localhost:8000` (ver `../api/main.py`)
-
----
+- Node.js 20+
+- pnpm 9+
+- Backend FastAPI rodando em `localhost:8000`
 
 ## Instalação
 
 ```bash
-cd frontend
 pnpm install
 ```
 
----
-
 ## Desenvolvimento
 
-Em dois terminais separados:
-
-**Terminal 1 — Backend (da raiz do projeto):**
 ```bash
-uvicorn api.main:app --reload --port 8000
-```
-
-**Terminal 2 — Frontend:**
-```bash
-cd frontend
 pnpm dev
+# → http://localhost:5173
 ```
 
-Acesse em: **http://localhost:5173**
+O Vite redireciona requisições `/api/*` para `http://localhost:8000` (configurado em `vite.config.ts`).
 
-O Vite faz proxy automático de `/api/*` → `http://localhost:8000`, então não há conflito de CORS em desenvolvimento.
-
----
-
-## Build para produção
+## Build
 
 ```bash
-cd frontend
 pnpm build
+# → dist/
 ```
-
-Os arquivos estáticos ficam em `frontend/dist/`. Sirva-os com o Nginx ou via FastAPI (StaticFiles).
-
----
 
 ## Variáveis de ambiente
 
-Crie um arquivo `.env` em `frontend/` (já ignorado pelo git):
+Crie um arquivo `.env` na raiz de `frontend/`:
 
 ```env
-# URL base da API em produção (em desenvolvimento, deixe vazio — o proxy do Vite cuida)
-VITE_API_BASE_URL=
+VITE_API_BASE_URL=http://localhost:8000
 ```
-
----
 
 ## Estrutura
 
 ```
 frontend/
-├── docs/
-│   └── ADR-001-stack-frontend.md   # Decisão de stack
 ├── src/
 │   ├── app/
-│   │   ├── App.tsx                 # Componente raiz — orquestra chat e sidebar
 │   │   ├── components/
-│   │   │   ├── AppHeader.tsx       # Cabeçalho com branding Banco Ágil
-│   │   │   ├── ChatMessage.tsx     # Bolhas de mensagem (user/assistente)
-│   │   │   ├── ConversationSidebar.tsx  # Lista de conversas com busca
-│   │   │   ├── EmptyState.tsx      # Boas-vindas com sugestões clicáveis
-│   │   │   ├── MessageComposer.tsx # Campo de texto + botão enviar
-│   │   │   ├── TypingIndicator.tsx # Indicador "digitando..."
-│   │   │   ├── SkeletonLoader.tsx  # Skeleton durante carregamento
-│   │   │   └── ui/                 # Kit shadcn (button, dialog, input...)
-│   │   └── services/
-│   │       └── api.ts              # Chamadas HTTP ao backend FastAPI
+│   │   │   ├── AuthCard.tsx         # Input estruturado CPF + data de nascimento
+│   │   │   ├── ContactCard.tsx      # Canais de atendimento pós-3 falhas de auth
+│   │   │   ├── AppHeader.tsx        # Header com branding e toggle dark mode
+│   │   │   ├── ChatMessage.tsx      # Balão de mensagem (usuário e assistente)
+│   │   │   ├── MessageComposer.tsx  # Input de texto + botão enviar
+│   │   │   ├── ConversationSidebar.tsx  # Lista de conversas
+│   │   │   ├── TypingIndicator.tsx  # Animação "digitando..."
+│   │   │   └── SkeletonLoader.tsx   # Skeleton enquanto carrega histórico
+│   │   ├── services/
+│   │   │   └── api.ts               # HTTP client (sendChatMessage, listConversations...)
+│   │   └── App.tsx                  # Orquestrador: estado, autenticação, mensagens
 │   ├── styles/
-│   │   ├── index.css               # Entry CSS
-│   │   ├── theme.css               # Design tokens (cores azul bancário, dark mode)
-│   │   └── fonts.css               # Fontes
-│   └── main.tsx                    # Entry point React
+│   │   └── theme.css                # Paleta de cores Banco Ágil (azul/navy)
+│   └── main.tsx
+├── docs/
+│   └── ADR-001-stack-frontend.md
 ├── index.html
-├── vite.config.ts                  # Proxy /api → :8000
-├── package.json
-└── pnpm-lock.yaml
+├── vite.config.ts
+├── tailwind.config.ts
+└── package.json
 ```
-
----
 
 ## Funcionalidades
 
-- **Chat conversacional** — mensagens do usuário à direita, agente à esquerda com avatar 🏦
-- **Markdown nas respostas** — o agente pode usar listas, negrito, tabelas
-- **Histórico de conversas** — sidebar com busca, persistido no Redis via LangGraph
-- **Nova conversa** — botão `+` na sidebar inicia sessão limpa
-- **Dark mode** — alternância claro/escuro, preferência salva na sessão
-- **Sugestões de perguntas** — state vazio apresenta atalhos clicáveis
-- **Indicador de digitação** — feedback visual enquanto o agente processa
+### Autenticação estruturada (`AuthCard`)
+- Input com máscara de CPF (`000.000.000-00`) e data (`DD/MM/AAAA`)
+- Validação client-side antes de enviar
+- Prop `retry={true}` ajusta o texto para tentativas subsequentes
+- Desaparece após autenticação bem-sucedida (`authenticated: true`)
+- Reexibido automaticamente após falha de autenticação
+
+### Bloqueio pós-3 falhas (`ContactCard`)
+Quando o backend retorna `encerrado: true`:
+- `AuthCard` não é mais exibido
+- `MessageComposer` some completamente do DOM
+- `ContactCard` aparece com:
+  - Central 0800 722 4001 (24h)
+  - WhatsApp (11) 99999-4001
+  - www.bancoagil.com.br
+  - sac@bancoagil.com.br
+
+### Gerenciamento de conversas
+- Sidebar com lista de sessões (carregadas do backend via Redis)
+- Botão "Nova conversa" reseta estado de autenticação
+- Histórico de cada sessão carregado ao selecionar
+
+### Tema
+Paleta azul/navy definida em `src/styles/theme.css`. Suporte a modo escuro via `dark:` classes do Tailwind.
 
 ---
 
-## Contrato de API consumido
+## Contrato de API
 
-| Método | Endpoint                      | Descrição                        |
-|--------|-------------------------------|----------------------------------|
-| POST   | `/api/chat`                   | Envia mensagem, recebe resposta  |
-| GET    | `/api/conversations`          | Lista sessões                    |
-| POST   | `/api/conversations`          | Cria nova sessão                 |
-| GET    | `/api/conversations/{id}`     | Histórico de uma sessão          |
-| GET    | `/api/health`                 | Health check                     |
+O frontend consome os seguintes endpoints da FastAPI:
+
+| Endpoint | Método | Payload / Query | Retorno |
+|---|---|---|---|
+| `/api/chat` | `POST` | `{message, conversation_id?}` | `{reply, conversation_id, authenticated, encerrado}` |
+| `/api/conversations` | `GET` | — | `{sessions: [{id, title, updated_at}]}` |
+| `/api/conversations` | `POST` | `{title}` | `{id, title, created_at, updated_at}` |
+| `/api/conversations/:id` | `GET` | — | `{session, messages}` |
+| `/api/health` | `GET` | — | `{status, service}` |
+| `/api/debug/logs` | `GET` | `?n=100` | `{total_lines, lines}` |
+
+### Campos de resposta do `/api/chat`
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `reply` | `string` | Texto a exibir no chat |
+| `conversation_id` | `string` | UUID da sessão (para manter continuidade) |
+| `authenticated` | `boolean` | `true` → esconde AuthCard, exibe Composer |
+| `encerrado` | `boolean` | `true` → exibe ContactCard, oculta Composer |

@@ -1,104 +1,151 @@
-# Diagrama: Grafo de Estados LangGraph
+# Diagrama do Grafo LangGraph — Banco Ágil
 
-**Data:** 2026-04-22  
-**Versão:** 1.0  
-**Referências:** [ADR-001](../decisions/ADR-001-framework-agentes.md) · [ADR-003](../decisions/ADR-003-handoff-agentes.md)
-
----
-
-## Topologia do StateGraph
-
-Este diagrama representa exatamente os nós (`add_node`) e arestas (`add_edge` / `add_conditional_edges`) do `StateGraph` implementado em `graph.py`.
+## Topologia completa
 
 ```mermaid
 stateDiagram-v2
-    [*] --> agente_triagem : nova mensagem do usuário
+    [*] --> agente_triagem
 
-    agente_triagem --> agente_triagem : coletando CPF / data nasc.
-    agente_triagem --> agente_triagem : autenticação falhou\n(tentativas < 3)
-    agente_triagem --> [*] : autenticação falhou\n(3ª tentativa) → encerrado=True
+    agente_triagem --> agente_triagem : autenticado\nresposta_final=None\nagente_ativo="triagem"
+    agente_triagem --> agente_credito : agente_ativo="credito"\nresposta_final=None
+    agente_triagem --> agente_cambio : agente_ativo="cambio"\nresposta_final=None
+    agente_triagem --> agente_entrevista : agente_ativo="entrevista"\nresposta_final=None
+    agente_triagem --> salvar_memoria : encerrado=True\nmemoria_salva=False
+    agente_triagem --> [*] : resposta_final != None
 
-    agente_triagem --> agente_credito : intenção = crédito\nautenticado=True
-    agente_triagem --> agente_cambio : intenção = câmbio\nautenticado=True
-    agente_triagem --> agente_entrevista : intenção = entrevista\nautenticado=True
-    agente_triagem --> [*] : usuário quer encerrar
+    agente_credito --> agente_entrevista : agente_ativo="entrevista"\nresposta_final != None
+    agente_credito --> salvar_memoria : encerrado=True
+    agente_credito --> [*] : resposta_final != None
 
-    agente_credito --> agente_credito : consulta / solicitação em andamento
-    agente_credito --> agente_entrevista : score insuficiente\nusuário aceita entrevista
-    agente_credito --> agente_triagem : novo assunto
-    agente_credito --> [*] : usuário quer encerrar
+    agente_cambio --> agente_credito : agente_ativo="credito"\nresposta_final=None
+    agente_cambio --> salvar_memoria : encerrado=True
+    agente_cambio --> [*] : resposta_final != None
 
-    agente_entrevista --> agente_entrevista : coletando dados financeiros
-    agente_entrevista --> agente_credito : score recalculado\nretorna para crédito
-    agente_entrevista --> agente_triagem : novo assunto
-    agente_entrevista --> [*] : usuário quer encerrar
+    agente_entrevista --> agente_credito : agente_ativo="credito"\nresposta_final != None
+    agente_entrevista --> salvar_memoria : encerrado=True
+    agente_entrevista --> [*] : resposta_final != None
 
-    agente_cambio --> agente_cambio : buscando cotação
-    agente_cambio --> agente_triagem : novo assunto
-    agente_cambio --> [*] : usuário quer encerrar
+    salvar_memoria --> [*] : sempre
 ```
 
 ---
 
-## Função Router (edges condicionais)
-
-O roteamento é feito por uma função Python pura — não por LLM:
+## Lógica do Router
 
 ```mermaid
 flowchart TD
-    Turno["Fim de turno\n(agente respondeu)"] --> R{Router}
+    START([router chamado após nó]) --> A{encerrado?}
 
-    R -->|"encerrado = True"| END(["END"])
-    R -->|"não autenticado"| AT["agente_triagem"]
-    R -->|"agente_ativo = 'credito'"| AC["agente_credito"]
-    R -->|"agente_ativo = 'entrevista'"| AE["agente_entrevista"]
-    R -->|"agente_ativo = 'cambio'"| ACB["agente_cambio"]
-    R -->|"default"| AT
+    A -- Sim --> B{memoria_salva?}
+    B -- Não --> SAVE[salvar_memoria]
+    B -- Sim --> END1([END])
+    SAVE --> END2([END])
+
+    A -- Não --> C{resposta_final\nnão é None?}
+    C -- Sim --> END3([END])
+    C -- Não --> D{cliente\nautenticado?}
+
+    D -- Não --> TRIAGEM[agente_triagem]
+    D -- Sim --> E{agente_ativo}
+
+    E -- triagem --> TRIAGEM
+    E -- credito --> CREDITO[agente_credito]
+    E -- cambio --> CAMBIO[agente_cambio]
+    E -- entrevista --> ENTREVISTA[agente_entrevista]
+    E -- inválido --> TRIAGEM
 ```
 
 ---
 
-## Código de referência — `graph.py`
+## Código de referência (`src/graph.py`)
 
 ```python
-from langgraph.graph import StateGraph, END
-from src.models.state import BancoAgilState
-
-def criar_grafo(checkpointer):
-    workflow = StateGraph(BancoAgilState)
-
-    # Nós
-    workflow.add_node("agente_triagem",    no_triagem)
-    workflow.add_node("agente_credito",    no_credito)
-    workflow.add_node("agente_entrevista", no_entrevista)
-    workflow.add_node("agente_cambio",     no_cambio)
-
-    # Ponto de entrada
-    workflow.set_entry_point("agente_triagem")
-
-    # Edges condicionais — saem de cada agente
-    for agente in ["agente_triagem", "agente_credito", "agente_entrevista", "agente_cambio"]:
-        workflow.add_conditional_edges(agente, router)
-
-    return workflow.compile(checkpointer=checkpointer)
-
-
 def router(state: BancoAgilState) -> str:
-    if state["encerrado"]:
+    # Encerramento: salva memória semântica antes de terminar
+    if state.get("encerrado"):
+        if not state.get("memoria_salva"):
+            return "salvar_memoria"
         return END
+
+    # Agente sinalizou resposta final → fim do turno
+    if state.get("resposta_final") is not None:
+        return END
+
+    # Turno em andamento → rotear para o agente correto
     if not state.get("cliente_autenticado"):
         return "agente_triagem"
-    return f"agente_{state['agente_ativo']}"
+
+    agente = state.get("agente_ativo", "triagem")
+    destino = f"agente_{agente}"
+
+    mapa_valido = {"agente_triagem", "agente_credito", "agente_entrevista", "agente_cambio"}
+    if destino not in mapa_valido:
+        logger.warning("agente_ativo inválido '%s', retornando triagem", agente)
+        return "agente_triagem"
+
+    return destino
+```
+
+```python
+# Montagem do grafo
+workflow = StateGraph(BancoAgilState)
+
+workflow.add_node("agente_triagem",    no_triagem)
+workflow.add_node("agente_credito",    no_credito)
+workflow.add_node("agente_entrevista", no_entrevista)
+workflow.add_node("agente_cambio",     no_cambio)
+workflow.add_node("salvar_memoria",    no_salvar_memoria)
+
+workflow.set_entry_point("agente_triagem")
+
+for agente in ["agente_triagem", "agente_credito", "agente_entrevista", "agente_cambio"]:
+    workflow.add_conditional_edges(agente, router)
+
+workflow.add_edge("salvar_memoria", END)   # sempre termina após salvar
+
+checkpointer = criar_checkpointer()        # RedisSaver
+graph = workflow.compile(checkpointer=checkpointer)
 ```
 
 ---
 
-## Por que o router não usa LLM?
+## Por que o router não usa LLM
 
-O roteamento é **determinístico** — baseado em campos do estado, não em interpretação de texto:
+O router é chamado **após cada nó**, potencialmente várias vezes por turno. Usar um LLM ali adicionaria:
 
-- `encerrado` → flag booleana setada por qualquer agente quando o usuário pede fim
-- `cliente_autenticado` → dict preenchido pelo Agente de Triagem após auth bem-sucedida
-- `agente_ativo` → string setada pelo Agente de Triagem ao identificar a intenção
+- **Latência**: 300–800 ms por chamada adicional ao Gemini
+- **Custo**: chamadas extras sem valor de negócio
+- **Não-determinismo**: risco de loops ou destinos inesperados
 
-Isso garante **previsibilidade, rastreabilidade e performance** — não há chamada LLM extra para decidir o próximo passo.
+A lógica é 100% baseada em campos de estado (`resposta_final`, `encerrado`, `agente_ativo`, `cliente_autenticado`), tornando-a:
+
+- ✅ Previsível e auditável
+- ✅ Testável unitariamente sem mocks de LLM
+- ✅ Com tempo de execução constante (~1 ms)
+
+O único uso de LLM no roteamento é o **classificador de intenção** (`intent_classifier.py`), que é chamado **dentro** dos agentes de triagem, não no router. Ele tem cache TTL de 5 min para mensagens repetidas (ADR-011).
+
+---
+
+## Nó `salvar_memoria`
+
+Executado **uma vez** ao final de cada sessão (`encerrado=True`):
+
+1. Gera um resumo da conversa via LLM (prompt interno ao nó)
+2. Persiste no Qdrant com filtro por CPF
+3. Seta `memoria_salva=True` para evitar execução dupla
+
+```mermaid
+sequenceDiagram
+    participant Router
+    participant SaveMem as salvar_memoria
+    participant LLM as Gemini
+    participant Qdrant
+
+    Router->>SaveMem: encerrado=True, memoria_salva=False
+    SaveMem->>LLM: Gerar resumo da conversa
+    LLM-->>SaveMem: "Cliente consultou limite..."
+    SaveMem->>Qdrant: salvar_interacao(cpf, resumo, agentes)
+    SaveMem-->>Router: {memoria_salva: True}
+    Router->>Router: END
+```

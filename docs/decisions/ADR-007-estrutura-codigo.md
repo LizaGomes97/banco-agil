@@ -1,142 +1,138 @@
-# ADR-007: Estrutura de Código e Separação de Responsabilidades
+# ADR-007 — Estrutura de Código: Módulos por Agente
 
-**Data:** 2026-04-22  
-**Status:** Aceito  
-**Autor:** Equipe Banco Ágil
+| Campo | Valor |
+|---|---|
+| **Status** | Aceito |
+| **Data** | 2026-04-23 |
+| **Decisores** | Equipe de desenvolvimento |
+| **Substitui** | Estrutura plana com `src/agents/*.py` e `src/prompts/*.md` |
 
 ---
 
 ## Contexto
 
-A organização do código impacta diretamente a legibilidade, manutenibilidade e a impressão que o avaliador terá ao navegar pelo repositório. O case exige explicitamente:
+A estrutura inicial do projeto organizava cada agente como um único arquivo Python (`triagem.py`, `credito.py`, etc.) e centralizava todos os system prompts em `src/prompts/`. À medida que adicionamos contratos de resposta, prompts adicionais (ex.: `credito_pro_sintese.md`) e lógica de validação específica por agente, ficou evidente que:
 
-> *"Estrutura organizada do código (divisão clara por módulos e responsabilidades dos agentes)."*
-
-A decisão central é como separar: lógica dos agentes, prompts do sistema, ferramentas, modelos de dados e infraestrutura.
+1. **Coesão baixa**: o prompt do agente de crédito estava longe do seu código.
+2. **Difícil manutenção**: para entender um agente era preciso navegar em três diretórios diferentes.
+3. **Contratos espalhados**: ao criar `response_contract.py`, a lógica de validação ficaria num local distante dos agentes que a usam.
+4. **Expansibilidade comprometida**: adicionar um novo agente exigia criar arquivos em múltiplos locais.
 
 ---
 
 ## Decisão
 
-**Escolha:** Arquitetura modular com separação explícita de prompts
-
-Cada agente vive em seu próprio módulo. Os prompts do sistema são arquivos `.md` separados do código Python, carregados em runtime. As ferramentas são módulos independentes e reutilizáveis.
-
----
-
-## Estrutura adotada
+Cada agente é um **módulo Python independente** com estrutura padronizada:
 
 ```
-banco-agil/
-├── src/
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── triagem.py          ← nó do grafo + lógica de autenticação
-│   │   ├── credito.py          ← nó do grafo + lógica de crédito
-│   │   ├── entrevista.py       ← nó do grafo + condução da entrevista
-│   │   └── cambio.py           ← nó do grafo + chamada de câmbio
-│   ├── prompts/
-│   │   ├── triagem.md          ← system prompt do agente de triagem
-│   │   ├── credito.md          ← system prompt do agente de crédito
-│   │   ├── entrevista.md       ← system prompt do agente de entrevista
-│   │   └── cambio.md           ← system prompt do agente de câmbio
-│   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── csv_repository.py   ← leitura/escrita de CSVs
-│   │   ├── score_calculator.py ← cálculo de score (ver ADR-005)
-│   │   └── exchange_rate.py    ← integração Tavily (ver ADR-006)
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── state.py            ← BancoAgilState (TypedDict do grafo)
-│   │   └── schemas.py          ← dataclasses para Cliente, Solicitacao
-│   ├── infrastructure/
-│   │   ├── __init__.py
-│   │   └── checkpointer.py     ← setup do Redis (ver ADR-004)
-│   ├── graph.py                ← montagem do StateGraph e edges
-│   └── config.py               ← variáveis de ambiente e constantes
-├── app.py                      ← entrypoint Streamlit
-├── data/
-│   ├── clientes.csv
-│   └── solicitacoes_aumento_limite.csv
-├── docs/
-│   ├── decisions/              ← ADRs
-│   ├── diagrams/               ← diagramas de arquitetura
-│   └── flows/                  ← fluxos de sequência
-├── tests/
-│   ├── test_score_calculator.py
-│   ├── test_csv_repository.py
-│   └── test_agents/
-├── .env.example
-├── requirements.txt
-└── README.md
+src/agents/
+  <nome_agente>/
+    __init__.py       # Exporta a função principal (no_<agente>)
+    agent.py          # Lógica do nó do grafo LangGraph
+    contract.py       # Contratos de validação de resposta deste agente
+    prompt.md         # System prompt principal
+    [prompt_*.md]     # Prompts adicionais (ex.: prompt_pro.md para crédito)
+```
+
+### Estrutura atual completa
+
+```
+src/agents/
+  triagem/
+    __init__.py       → exporta no_triagem
+    agent.py          → autenticação, roteamento, classificação de intenção
+    contract.py       → contrato_consulta_financeira, contrato_autenticacao_falha
+    prompt.md         → system prompt do assistente de triagem
+  credito/
+    __init__.py       → exporta no_credito
+    agent.py          → pipeline Flash→Pro, execução de credit_tools
+    contract.py       → contrato_flash_direto, contrato_sintese_pro
+    prompt.md         → system prompt do Flash (coleta + tools)
+    prompt_pro.md     → system prompt do analista sênior (síntese Pro)
+  cambio/
+    __init__.py       → exporta no_cambio
+    agent.py          → tool calling inline (Tavily), ciclo 1ª+2ª chamada LLM
+    contract.py       → contrato_cotacao (valida presença de R$)
+    prompt.md         → system prompt do agente de câmbio
+  entrevista/
+    __init__.py       → exporta no_entrevista
+    agent.py          → coleta de dados financeiros, calcular_score_credito
+    contract.py       → contrato_resultado_entrevista, contrato_coleta_dados
+    prompt.md         → system prompt da entrevista financeira
+```
+
+### Camada de infraestrutura separada
+
+Código reutilizável entre agentes reside em `src/infrastructure/`:
+
+```
+src/infrastructure/
+  response_contract.py  # Framework base: CampoContrato, ResponseContract
+  logging_config.py     # Logging centralizado + tail_log()
+  model_provider.py     # invocar_com_fallback, tiers fast/pro
+  checkpointer.py       # RedisSaver para LangGraph
+  qdrant_memory.py      # buscar_memorias, salvar_interacao
+  cache.py              # CacheComTTL + decorator com_cache
 ```
 
 ---
 
 ## Justificativa
 
-### Por que prompts como arquivos `.md` separados?
+### Co-localização (Single Responsibility Principle)
+Tudo que define o comportamento de um agente está no mesmo diretório. Um desenvolvedor que abre `src/agents/credito/` encontra imediatamente o código, o prompt e os contratos — sem navegar por outras pastas.
 
-**"Prompt as Configuration"** — o mesmo princípio de separar configuração de código:
+### Contratos como cidadãos de primeira classe
+Cada `contract.py` documenta **o que o agente garante** sobre suas respostas. É o equivalente a uma interface em linguagens tipadas: quem consome o agente sabe exatamente o que esperar.
 
-1. **Iteração rápida:** Ajustar o tom do agente sem tocar no código Python
-2. **Versionamento explícito:** `git diff prompts/triagem.md` mostra exatamente o que mudou no comportamento
-3. **Legibilidade:** Um prompt de 50 linhas no meio de código Python polui o arquivo
-4. **Testabilidade:** Permite testar variações de prompt independentemente da lógica
+### Analogia com projetos .NET / Clean Architecture
+A estrutura espelha o padrão de **Feature Folders** (ou Vertical Slices) adotado em projetos .NET modernos: cada feature (agente) agrupa todos os seus componentes em vez de dividir por tipo técnico.
 
+### Importações limpas no grafo
 ```python
-# src/agents/triagem.py — carregamento do prompt
-from pathlib import Path
-
-def carregar_prompt(nome: str) -> str:
-    caminho = Path(__file__).parent.parent / "prompts" / f"{nome}.md"
-    return caminho.read_text(encoding="utf-8")
-
-SYSTEM_PROMPT = carregar_prompt("triagem")
+# graph.py — limpo e expressivo
+from src.agents.triagem import no_triagem
+from src.agents.credito import no_credito
+from src.agents.cambio  import no_cambio
+from src.agents.entrevista import no_entrevista
 ```
 
-### Por que `models/state.py` separado?
-
-O `BancoAgilState` é o contrato entre todos os agentes. Isolá-lo em um arquivo próprio:
-- Torna as dependências explícitas
-- Evita imports circulares
-- Facilita entender o que cada agente lê/escreve
-
-### Por que `graph.py` separado dos agentes?
-
-Montagem do grafo (`StateGraph`, `add_node`, `add_edge`, `compile`) é infraestrutura, não lógica de negócio. Separar permite:
-- Testar agentes individualmente sem instanciar o grafo completo
-- Visualizar a topologia do sistema em um único arquivo
+### Expansão sem fricção
+Adicionar um novo agente segue um template claro: criar a pasta, os 4 arquivos obrigatórios e registrar em `graph.py`. Sem arquivos soltos, sem prompts em pasta separada.
 
 ---
 
 ## Alternativas consideradas
 
-| Opção | Prós | Contras | Descartada por |
-|-------|------|---------|----------------|
-| **Tudo em `app.py`** | Rápido de criar | Impossível de manter, mistura responsabilidades | Viola requisito explícito do case |
-| **Prompts inline no código** | Menos arquivos | Dificulta iteração, polui lógica Python | Boas práticas de engenharia de prompts |
-| **Um arquivo por feature** (auth.py, credit.py...) | Alternativo | Não alinha com responsabilidade por agente | Menos intuitivo para o contexto multi-agente |
+### Estrutura plana original (`src/agents/*.py` + `src/prompts/`)
+- **Vantagem:** menos diretórios, mais simples inicialmente.
+- **Desvantagem:** escala mal; prompts e contratos ficam longe do código que os usa. Rejeitada após a adição dos contratos.
+
+### Monolito (`agent.py` único com tudo)
+- **Vantagem:** um arquivo por agente.
+- **Desvantagem:** mistura lógica, prompts e contratos, tornando o arquivo longo e difícil de testar. Rejeitada.
+
+### Pacote separado por agente com `pyproject.toml`
+- **Vantagem:** isolamento máximo, controle de versão por agente.
+- **Desvantagem:** overhead desnecessário para um monorrepo pequeno. Reservada para evolução futura.
 
 ---
 
 ## Consequências
 
 **Positivas:**
-- Código navegável — avaliador encontra cada coisa em 10 segundos
-- Prompts versionados e legíveis
-- Tools reutilizáveis entre agentes
-- Testes unitários possíveis para cada camada
+- Cada módulo é testável isoladamente (mock do estado, validação do contrato).
+- Onboarding mais rápido: um novo desenvolvedor entende o agente de câmbio lendo apenas `src/agents/cambio/`.
+- Prompts versionados junto ao código que os usa — sem dessincronização.
 
-**Negativas / trade-offs aceitos:**
-- Mais arquivos para gerenciar que uma solução monolítica
-- Carregamento de prompts em runtime adiciona leitura de arquivo na inicialização (negligível)
+**Negativas / trade-offs:**
+- Mais diretórios do que a estrutura plana original.
+- `__init__.py` de cada módulo é trivial mas obrigatório para as importações funcionarem.
 
 ---
 
 ## Referências
 
-- [Prompt Engineering — Prompt as Configuration pattern](https://www.promptingguide.ai/)
-- [Clean Architecture — separação de camadas](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
-- [ADR-003](ADR-003-handoff-agentes.md) — Estrutura do BancoAgilState
-- [ADR-004](ADR-004-persistencia-estado.md) — Infraestrutura Redis
+- ADR-001: Framework de agentes (LangGraph)
+- ADR-014: Sistema de contratos de resposta
+- [Feature Folders / Vertical Slice Architecture](https://jimmybogard.com/vertical-slice-architecture/)

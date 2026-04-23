@@ -1,83 +1,129 @@
-# Fluxo: Autenticação do Cliente (Agente de Triagem)
+# Fluxo de Autenticação — Banco Ágil
 
-**Data:** 2026-04-22  
-**Versão:** 1.0  
-**Referências:** [ADR-003](../decisions/ADR-003-handoff-agentes.md) · [ADR-004](../decisions/ADR-004-persistencia-estado.md)
+## Visão do cliente
+
+O cliente abre o chat e vê imediatamente o `AuthCard` — um campo estruturado com máscara de CPF e data de nascimento — antes de poder digitar qualquer mensagem.
+
+```
+┌──────────────────────────────────────────┐
+│  IDENTIFICAÇÃO DO CLIENTE                │
+│                                          │
+│  ☐ CPF                                   │
+│  [___ . ___ . ___-__]                    │
+│                                          │
+│  🗓 Data de nascimento                   │
+│  [__/__/____]                            │
+│                                          │
+│         [ Continuar ]                    │
+└──────────────────────────────────────────┘
+```
+
+Após a autenticação bem-sucedida, o `AuthCard` desaparece e o chat é liberado.
 
 ---
 
-## Sequência de autenticação
+## Sequência completa
 
 ```mermaid
 sequenceDiagram
-    actor Cliente
-    participant UI as Streamlit UI
-    participant T as Agente Triagem
+    participant U as Usuário
+    participant FE as React (AuthCard)
+    participant API as FastAPI
+    participant G as LangGraph
+    participant T as Triagem
     participant CSV as clientes.csv
-    participant Redis as Redis (Estado)
 
-    Cliente->>UI: Inicia conversa
-    UI->>T: nova sessão (thread_id gerado)
-    T->>Redis: criar estado inicial\n{tentativas_auth: 0, autenticado: null}
-    T-->>Cliente: "Olá! Bem-vindo ao Banco Ágil.\nPode me informar seu CPF?"
+    %% Abertura do chat
+    U->>FE: Abre o chat
+    FE->>U: Exibe AuthCard (sem MessageComposer)
 
-    Cliente->>T: informa CPF
-    T-->>Cliente: "Obrigado! Agora preciso da sua\ndata de nascimento."
-
-    Cliente->>T: informa data de nascimento
-    T->>CSV: buscar(cpf, data_nascimento)
-
-    alt Autenticação bem-sucedida
-        CSV-->>T: cliente encontrado ✓
-        T->>Redis: {cliente_autenticado: {...}, tentativas_auth: 0}
-        T-->>Cliente: "Autenticado com sucesso, [Nome]!\nComo posso ajudá-lo hoje?"
-        T->>Redis: aguarda próxima mensagem para identificar intenção
-    else Autenticação falhou (1ª ou 2ª tentativa)
-        CSV-->>T: cliente não encontrado ✗
-        T->>Redis: {tentativas_auth: +1}
-        T-->>Cliente: "Não consegui verificar seus dados.\nPoderia tentar novamente?\n(Tentativa X de 3)"
-        Note over T,Cliente: Loop volta ao início da coleta de CPF
-    else Autenticação falhou (3ª tentativa)
-        CSV-->>T: cliente não encontrado ✗
-        T->>Redis: {tentativas_auth: 3, encerrado: true}
-        T-->>Cliente: "Infelizmente não foi possível autenticar\nsua identidade. Por favor, entre em\ncontato com nossa central. Até logo!"
-        Note over UI: Conversa encerrada
-    end
+    %% Tentativa 1 — sucesso
+    U->>FE: Preenche CPF + data e clica Continuar
+    FE->>API: POST /api/chat {message: "CPF: ... Data: ..."}
+    API->>G: graph.invoke({messages}, thread_id)
+    G->>T: no_triagem(state)
+    T->>T: _extrair_cpf() + _extrair_data()
+    T->>CSV: buscar_cliente(cpf, data)
+    CSV-->>T: Cliente encontrado
+    T-->>G: {cliente_autenticado: {...}, resposta_final: None}
+    G->>G: router → agente_triagem (2ª passagem)
+    G->>T: no_triagem com cliente_autenticado
+    T->>T: LLM gera saudação
+    T-->>G: {resposta_final: "Olá Ana, tudo bem?..."}
+    G-->>API: {resposta_final, cliente_autenticado}
+    API-->>FE: {reply, authenticated: true}
+    FE->>U: Exibe saudação + esconde AuthCard + exibe Composer
 ```
 
 ---
 
-## Fluxo de decisão (visão do código)
+## Fluxo de decisão (Triagem)
 
 ```mermaid
 flowchart TD
-    Start([Nova mensagem]) --> TemCPF{CPF coletado?}
-    TemCPF -->|Não| PedirCPF["Solicitar CPF"]
-    TemCPF -->|Sim| TemData{Data nasc. coletada?}
-    TemData -->|Não| PedirData["Solicitar data nasc."]
-    TemData -->|Sim| Validar["Buscar no CSV\nbuscar_cliente(cpf, data)"]
+    START([Mensagem recebida]) --> A{cliente\nautenticado?}
 
-    Validar --> Encontrado{Encontrado?}
-    Encontrado -->|Sim| Autenticado["state.cliente_autenticado = dados\nstate.agente_ativo = 'triagem'"]
-    Autenticado --> IdentificarIntencao["Identificar intenção do cliente"]
-    IdentificarIntencao --> Redirecionar["state.agente_ativo = 'credito'|'cambio'|'entrevista'"]
+    A -- Sim --> B{agente_ativo?}
+    B -- triagem --> C[Identificar intenção]
+    B -- outro --> D[Passthrough silencioso]
+    C --> END1([Rotear ou responder])
+    D --> END1
 
-    Encontrado -->|Não| ContarTentativa["state.tentativas_auth += 1"]
-    ContarTentativa --> Limite{tentativas >= 3?}
-    Limite -->|Não| MsgErro["Mensagem de erro amigável\nSolicitar novamente"]
-    MsgErro --> PedirCPF
-    Limite -->|Sim| Encerrar["state.encerrado = True\nMensagem de encerramento"]
-    Encerrar --> END([FIM])
+    A -- Não --> E[Extrair CPF + data do histórico]
+    E --> F{Ambos\nencontrados?}
+
+    F -- Não --> G[LLM conduz coleta]
+    G --> END2([resposta_final = texto])
+
+    F -- Sim --> H[buscar_cliente(cpf, data)]
+    H --> I{Cliente\nencontrado?}
+
+    I -- Sim --> J[Autenticação OK\nbuscar_memorias Qdrant]
+    J --> K[resposta_final = None\nrouter volta à triagem]
+    K --> L[LLM gera saudação com nome]
+    L --> END3([resposta_final = saudação])
+
+    I -- Não --> M[tentativas++]
+    M --> N{tentativas\n>= 3?}
+    N -- Não --> O[LLM informa erro\npede nova tentativa]
+    O --> P[resposta_final = mensagem de erro\nAuthCard reexibido no frontend]
+    N -- Sim --> Q[encerrado = True\nresposta_final = mensagem final]
+    Q --> R[Frontend: ContactCard\nComposer oculto]
 ```
 
 ---
 
-## Edge cases cobertos
+## Comportamento do frontend por estado
 
-| Cenário | Comportamento esperado |
-|---------|----------------------|
-| CPF com ou sem máscara (`123.456.789-00` vs `12345678900`) | Normalizar antes de comparar |
-| Data em formatos diferentes (`01/01/1990` vs `1990-01-01`) | Normalizar para ISO antes de comparar |
-| Cliente digita texto no lugar do CPF | Agente solicita novamente com orientação |
-| Usuário pede para encerrar durante autenticação | `encerrado = True` imediato |
-| CSV vazio ou corrompido | Mensagem de erro técnico + log, não expõe detalhes ao cliente |
+| Estado do backend | `authenticated` | `encerrado` | Comportamento no frontend |
+|---|---|---|---|
+| Aguardando dados | `false` | `false` | AuthCard exibido (sem retry) |
+| Falha na autenticação (1ª ou 2ª) | `false` | `false` | AuthCard reexibido com `retry=true` |
+| Falha na autenticação (3ª) | `false` | `true` | ContactCard exibido; Composer oculto |
+| Autenticação bem-sucedida | `true` | `false` | AuthCard oculto; Composer exibido |
+
+---
+
+## Edge cases
+
+| Cenário | Tratamento |
+|---|---|
+| CPF inválido (formato) | Validação no AuthCard (JavaScript, antes de enviar) |
+| Data de nascimento futura | Validação no AuthCard |
+| CPF não encontrado no CSV | Mensagem de erro + AuthCard reexibido |
+| Data correta mas CPF errado | Idem |
+| Tentativa 3 falha | `encerrado=True`; ContactCard com WhatsApp, 0800, site, SAC |
+| Recarregamento da página | Estado perdido no frontend; Redis mantém o histórico |
+| Sessão nova via sidebar | `isAuthenticated` e `isEncerrado` resetados para `false` |
+
+---
+
+## Componentes relevantes
+
+| Arquivo | Papel |
+|---|---|
+| `frontend/src/app/components/AuthCard.tsx` | Input estruturado CPF + data; prop `retry` para variação de texto |
+| `frontend/src/app/components/ContactCard.tsx` | Canais de atendimento (WhatsApp, 0800, site, SAC) |
+| `frontend/src/app/App.tsx` | Gerencia `isAuthenticated` e `isEncerrado`; condiciona exibição |
+| `src/agents/triagem/agent.py` | Extração de CPF/data, busca, contagem de tentativas |
+| `api/main.py` | Extrai `authenticated` e `encerrado` do estado LangGraph |

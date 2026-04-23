@@ -31,6 +31,8 @@ export interface SendChatParams {
 export interface SendChatResult {
   reply: string;
   conversationId: string;
+  authenticated: boolean;
+  encerrado: boolean;
 }
 
 export async function sendChatMessage(params: SendChatParams): Promise<SendChatResult> {
@@ -65,6 +67,8 @@ export async function sendChatMessage(params: SendChatParams): Promise<SendChatR
   return {
     reply: reply || '_Sem conteúdo na resposta._',
     conversationId: convId || params.conversationId || '',
+    authenticated: Boolean(data?.authenticated),
+    encerrado: Boolean(data?.encerrado),
   };
 }
 

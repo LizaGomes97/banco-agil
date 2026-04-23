@@ -34,10 +34,17 @@ Classifique a mensagem do cliente em UMA das categorias abaixo.
 Responda SOMENTE com a palavra-chave exata, sem pontuação, sem explicações.
 
 Categorias:
-- credito    → pedir aumento de limite de cartão, consultar score de crédito, falar sobre empréstimo
+- credito    → pedir AUMENTO de limite de crédito/cartão, solicitar empréstimo, consultar elegibilidade de crédito
 - cambio     → perguntar cotação de moeda (dólar, euro, libra, iene etc.), câmbio, conversão de moeda
 - encerrar   → despedir-se, encerrar atendimento, tchau, sair, obrigado (finalizando)
-- nenhum     → qualquer outra coisa (saudação, pergunta genérica, assunto não identificado)
+- nenhum     → qualquer outra coisa: saudações, consultas de saldo, consulta de limite atual, consulta de score atual, informações gerais, assunto não identificado
+
+ATENÇÃO — classificar como "nenhum" (NÃO como "credito"):
+- "quero saber meu saldo"
+- "qual meu limite atual?"
+- "qual meu score?"
+- "qual é o meu limite de crédito?"
+- perguntas que APENAS consultam informações, sem PEDIR AUMENTO ou EMPRÉSTIMO
 
 Regra de desempate: se a mensagem citar câmbio/moeda E crédito ao mesmo tempo, classifique como "cambio".
 """
