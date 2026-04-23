@@ -32,8 +32,9 @@ except ImportError:
     HAS_RICH = False
 
 from .chat_client import BancoAgilClient
-from .config import CLIENTES, ClienteSimulado
+from .config import BACKEND_URL, CLIENTES, ClienteSimulado
 from .evaluator import EvaluationResult, avaliar, avaliar_auth
+from .logging_setup import get_logger, setup_logging
 from .question_bank import (
     QuestionItem,
     get_perguntas_guardrail,
@@ -43,6 +44,7 @@ from .question_bank import (
 from .reporter import save_json, save_markdown
 
 console = Console() if HAS_RICH else None
+logger = get_logger("main")
 
 
 def _log(msg: str, estilo: str = "") -> None:
@@ -58,28 +60,41 @@ async def cenario_auth_valida(cliente: ClienteSimulado, verbose: bool) -> List[E
     """Autentica com credenciais corretas e faz perguntas bancárias."""
     resultados: List[EvaluationResult] = []
 
+    logger.info("=== CENÁRIO: auth_valida | cliente=%s ===", cliente.nome)
     async with BancoAgilClient() as api:
         _log(f"\n[bold cyan]▶ Auth válida:[/bold cyan] {cliente.nome}" if HAS_RICH else
              f"\n>> Auth válida: {cliente.nome}")
 
-        # Autenticação
         r = await api.autenticar(cliente)
         ev = avaliar_auth(r, cliente.nome, esperava_sucesso=True)
         resultados.append(ev)
         _exibir_resultado(ev, r.reply if verbose else None)
+        logger.info(
+            "AUTH resultado: score=%.1f passou=%s authenticated=%s encerrado=%s problemas=%s",
+            ev.score, ev.passou(), r.authenticated, r.encerrado, ev.problemas,
+        )
 
         if not r.authenticated:
             _log("  [red]Auth falhou — pulando perguntas pós-auth[/red]" if HAS_RICH
                  else "  ERRO: Auth falhou — pulando perguntas pós-auth")
+            logger.warning("Auth falhou para %s — pulando perguntas", cliente.nome)
             return resultados
 
-        # Perguntas bancárias
         for item in get_perguntas_pos_auth():
+            logger.debug("Pergunta [%s]: '%s'", item.categoria, item.pergunta[:80])
             resp = await api.chat(item.pergunta)
             ev = avaliar(resp, item, cliente.nome)
             resultados.append(ev)
             _exibir_resultado(ev, resp.reply if verbose else None)
+            if ev.problemas:
+                logger.warning(
+                    "[%s] score=%.1f problemas=%s | reply='%s'",
+                    item.categoria, ev.score, ev.problemas, resp.reply[:150],
+                )
+            else:
+                logger.info("[%s] score=%.1f OK", item.categoria, ev.score)
 
+    logger.info("=== FIM auth_valida | cliente=%s | interações=%d ===", cliente.nome, len(resultados))
     return resultados
 
 
@@ -87,22 +102,26 @@ async def cenario_auth_invalida_recuperacao(cliente: ClienteSimulado, verbose: b
     """1 tentativa errada, depois autentica corretamente."""
     resultados: List[EvaluationResult] = []
 
+    logger.info("=== CENÁRIO: auth_invalida_recuperacao | cliente=%s ===", cliente.nome)
     async with BancoAgilClient() as api:
         _log(f"\n[bold yellow]▶ Auth inválida→recuperação:[/bold yellow] {cliente.nome}" if HAS_RICH
              else f"\n>> Auth inválida→recuperação: {cliente.nome}")
 
-        # Tentativa inválida
         r = await api.autenticar(cliente, usar_data_invalida=True)
         ev = avaliar_auth(r, cliente.nome, esperava_sucesso=False, tentativa=1)
         resultados.append(ev)
         _exibir_resultado(ev, r.reply if verbose else None)
+        logger.info("Tentativa 1 (inválida): score=%.1f authenticated=%s reply='%s'",
+                    ev.score, r.authenticated, r.reply[:100])
 
-        # Recuperação com dados corretos
         r2 = await api.autenticar(cliente)
         ev2 = avaliar_auth(r2, cliente.nome, esperava_sucesso=True, tentativa=2)
         resultados.append(ev2)
         _exibir_resultado(ev2, r2.reply if verbose else None)
+        logger.info("Tentativa 2 (válida): score=%.1f authenticated=%s reply='%s'",
+                    ev2.score, r2.authenticated, r2.reply[:100])
 
+    logger.info("=== FIM auth_invalida_recuperacao | cliente=%s ===", cliente.nome)
     return resultados
 
 
@@ -110,6 +129,7 @@ async def cenario_bloqueio_3_tentativas(cliente: ClienteSimulado, verbose: bool)
     """3 tentativas com data inválida → deve encerrar a sessão."""
     resultados: List[EvaluationResult] = []
 
+    logger.info("=== CENÁRIO: bloqueio_3_tentativas | cliente=%s ===", cliente.nome)
     async with BancoAgilClient() as api:
         _log(f"\n[bold red]▶ Bloqueio 3 tentativas:[/bold red] {cliente.nome}" if HAS_RICH
              else f"\n>> Bloqueio 3 tentativas: {cliente.nome}")
@@ -119,13 +139,21 @@ async def cenario_bloqueio_3_tentativas(cliente: ClienteSimulado, verbose: bool)
             ev = avaliar_auth(r, cliente.nome, esperava_sucesso=False, tentativa=tentativa)
             resultados.append(ev)
             _exibir_resultado(ev, r.reply if verbose else None)
+            logger.info(
+                "Tentativa %d/3: authenticated=%s encerrado=%s reply='%s'",
+                tentativa, r.authenticated, r.encerrado, r.reply[:120],
+            )
 
             if r.encerrado:
                 _log(f"  [green]✓ Sessão encerrada na tentativa {tentativa} (correto)[/green]"
                      if HAS_RICH else f"  OK: Sessão encerrada na tentativa {tentativa}")
+                logger.info("Bloqueio ativado na tentativa %d (comportamento correto)", tentativa)
                 break
         else:
-            # Se chegou aqui sem encerrar, é um bug
+            logger.error(
+                "BUG DE SEGURANÇA: sessão de %s NÃO foi encerrada após 3 tentativas inválidas!",
+                cliente.nome,
+            )
             ev_bug = EvaluationResult(
                 pergunta="[VERIFICAÇÃO] Sessão deve estar encerrada após 3 falhas",
                 categoria="autenticacao_bloqueio",
@@ -137,6 +165,7 @@ async def cenario_bloqueio_3_tentativas(cliente: ClienteSimulado, verbose: bool)
             _log("  [bold red]BUG: Sessão não encerrada após 3 falhas![/bold red]" if HAS_RICH
                  else "  BUG: Sessão não encerrada após 3 falhas!")
 
+    logger.info("=== FIM bloqueio_3_tentativas ===")
     return resultados
 
 
@@ -144,16 +173,26 @@ async def cenario_guardrail(verbose: bool) -> List[EvaluationResult]:
     """Testa guardrails sem autenticação."""
     resultados: List[EvaluationResult] = []
 
+    logger.info("=== CENÁRIO: guardrails ===")
     async with BancoAgilClient() as api:
         _log(f"\n[bold magenta]▶ Guardrails[/bold magenta]" if HAS_RICH
              else f"\n>> Guardrails")
 
         for item in get_perguntas_guardrail():
+            logger.debug("Guardrail [%s]: '%s'", item.categoria, item.pergunta[:80])
             resp = await api.chat(item.pergunta)
             ev = avaliar(resp, item, "Anônimo")
             resultados.append(ev)
             _exibir_resultado(ev, resp.reply if verbose else None)
+            if ev.problemas:
+                logger.warning(
+                    "GUARDRAIL [%s] score=%.1f problemas=%s | reply='%s'",
+                    item.categoria, ev.score, ev.problemas, resp.reply[:150],
+                )
+            else:
+                logger.info("GUARDRAIL [%s] score=%.1f OK", item.categoria, ev.score)
 
+    logger.info("=== FIM guardrails ===")
     return resultados
 
 
@@ -219,10 +258,11 @@ async def executar_cliente(cliente: ClienteSimulado, verbose: bool) -> List[Eval
 
 
 async def run_modo_completo(clientes: List[ClienteSimulado], verbose: bool) -> List[EvaluationResult]:
-    """Roda todos os cenários para todos os clientes + guardrails."""
-    tasks = [executar_cliente(c, verbose) for c in clientes]
-    lotes = await asyncio.gather(*tasks)
-    resultados = [r for lote in lotes for r in lote]
+    """Roda todos os cenários sequencialmente para evitar rate limit do Gemini."""
+    resultados: List[EvaluationResult] = []
+
+    for cliente in clientes:
+        resultados += await executar_cliente(cliente, verbose)
 
     # Bloqueio 3 tentativas (1 cliente basta)
     resultados += await cenario_bloqueio_3_tentativas(clientes[0], verbose)
@@ -265,7 +305,11 @@ async def _verificar_api() -> bool:
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 async def main_async(args: argparse.Namespace) -> int:
+    setup_logging(verbose_console=args.verbose)
     session_id = str(uuid.uuid4())[:8]
+
+    logger.info("╔══ SIMULADOR BANCO ÁGIL | sessão=%s modo=%s clientes=%d ══╗",
+                session_id, args.modo, args.clientes)
 
     _log(f"\n{'='*60}")
     _log(f"[bold]Simulador Banco Ágil[/bold] | sessão {session_id}" if HAS_RICH
@@ -277,9 +321,11 @@ async def main_async(args: argparse.Namespace) -> int:
     # Verificar API
     _log("Verificando API...", "dim")
     if not await _verificar_api():
+        logger.error("API offline em %s — abortar simulação", BACKEND_URL)
         _log("[bold red]ERRO: API não está respondendo. Inicie o servidor antes de rodar o simulador.[/bold red]"
              if HAS_RICH else "ERRO: API offline. Rode: uvicorn api.main:app --reload")
         return 1
+    logger.info("API online: %s", BACKEND_URL)
     _log("[green]✓ API online[/green]" if HAS_RICH else "OK: API online")
 
     clientes = CLIENTES[: args.clientes]
@@ -297,6 +343,22 @@ async def main_async(args: argparse.Namespace) -> int:
         resultados = await run_modo_completo(clientes, args.verbose)
 
     _exibir_resumo(resultados)
+
+    # Log do resumo final no arquivo
+    total = len(resultados)
+    passaram = sum(1 for r in resultados if r.passou())
+    score_medio = sum(r.score for r in resultados) / total if total else 0
+    falhas = [r for r in resultados if not r.passou()]
+    logger.info(
+        "╚══ RESULTADO FINAL | sessão=%s | %d/%d passaram | score_medio=%.1f ══╝",
+        session_id, passaram, total, score_medio,
+    )
+    for r in falhas:
+        logger.warning(
+            "FALHA [%s] cliente='%s' score=%.1f lat=%.1fs | %s",
+            r.categoria, r.cliente_nome, r.score, r.latencia_s,
+            " | ".join(r.problemas),
+        )
 
     # Salvar relatórios
     if not args.sem_relatorio and resultados:

@@ -5,6 +5,8 @@ backend/
 # ── Simulador ────────────────────────────────────────────────────────────────
 simulador/reports/*.json
 simulador/reports/*.md
+simulador/logs/*.log
+simulador/logs/*.log.*
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

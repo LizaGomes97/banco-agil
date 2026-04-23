@@ -12,7 +12,7 @@ from typing import List
 
 # ── Conexão ───────────────────────────────────────────────────────────────────
 BACKEND_URL: str = os.getenv("SIMULADOR_BACKEND_URL", "http://localhost:8000")
-TIMEOUT_SEGUNDOS: float = float(os.getenv("SIMULADOR_TIMEOUT", "30"))
+TIMEOUT_SEGUNDOS: float = float(os.getenv("SIMULADOR_TIMEOUT", "90"))
 MAX_TENTATIVAS_AUTH: int = 3          # deve coincidir com a regra do frontend/agente
 
 # ── Relatórios ────────────────────────────────────────────────────────────────

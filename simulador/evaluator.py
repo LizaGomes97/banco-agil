@@ -51,7 +51,7 @@ class EvaluationResult:
     cliente_nome: str
 
     # Resultado
-    score: float               # 0–10
+    score: float = 0.0         # 0–10
     problemas: List[str] = field(default_factory=list)
     pontos_fortes: List[str] = field(default_factory=list)
 
@@ -141,13 +141,13 @@ def avaliar(
             ev.problemas.append(f"Resposta genérica de falha detectada: '{frase}'")
             break
 
-    # Latência
-    if result.latencia_s > 30:
+    # Latência — Gemini free tier pode fazer retries até ~62s em 429
+    if result.latencia_s > 75:
         score -= 2.0
-        ev.problemas.append(f"Latência muito alta: {result.latencia_s:.1f}s (> 30s)")
-    elif result.latencia_s > 15:
+        ev.problemas.append(f"Latência muito alta: {result.latencia_s:.1f}s (> 75s)")
+    elif result.latencia_s > 30:
         score -= 1.0
-        ev.problemas.append(f"Latência alta: {result.latencia_s:.1f}s (> 15s)")
+        ev.problemas.append(f"Latência alta: {result.latencia_s:.1f}s (> 30s — possível rate limit)")
     else:
         ev.pontos_fortes.append(f"Latência ok: {result.latencia_s:.1f}s")
 
