@@ -12,9 +12,9 @@ import logging
 from pathlib import Path
 
 from langchain_core.messages import SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 
-from src.config import GEMINI_API_KEY, GEMINI_MODEL, LLM_TEMPERATURE, MAX_TENTATIVAS_AUTH
+from src.config import MAX_TENTATIVAS_AUTH
+from src.infrastructure.model_provider import invocar_com_fallback
 from src.infrastructure.qdrant_memory import buscar_memorias
 from src.models.state import BancoAgilState
 from src.tools.csv_repository import buscar_cliente
@@ -39,12 +39,6 @@ def _identificar_agente(mensagem: str) -> str | None:
 
 def no_triagem(state: BancoAgilState) -> dict:
     """Nó do grafo responsável pela triagem e autenticação."""
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=LLM_TEMPERATURE,
-        google_api_key=GEMINI_API_KEY,
-    )
-
     ultima_msg = state["messages"][-1].content if state["messages"] else ""
     ultima_msg_lower = ultima_msg.lower()
 
@@ -78,7 +72,7 @@ def no_triagem(state: BancoAgilState) -> dict:
             f"CPF: {cliente.get('cpf', '')}"
         )
         messages = [SystemMessage(content=_SYSTEM_PROMPT + contexto)] + list(state["messages"])
-        resposta = llm.invoke(messages)
+        resposta = invocar_com_fallback(messages)
         return {"messages": [resposta]}
 
     # ── Não autenticado: verificar se temos CPF + data para tentar auth ───────
@@ -111,14 +105,14 @@ def no_triagem(state: BancoAgilState) -> dict:
             logger.warning("Falha na autenticação — tentativa %d", tentativas)
             # Sempre produz AI message para o router parar neste turno
             messages = [SystemMessage(content=_SYSTEM_PROMPT)] + list(state["messages"])
-            resposta = llm.invoke(messages)
+            resposta = invocar_com_fallback(messages)
             if tentativas >= MAX_TENTATIVAS_AUTH:
                 return {"messages": [resposta], "tentativas_auth": tentativas, "encerrado": True}
             return {"messages": [resposta], "tentativas_auth": tentativas}
 
     # ── Sem dados suficientes: LLM conduz a coleta ───────────────────────────
     messages = [SystemMessage(content=_SYSTEM_PROMPT)] + list(state["messages"])
-    resposta = llm.invoke(messages)
+    resposta = invocar_com_fallback(messages)
     return {"messages": [resposta]}
 
 

@@ -18,6 +18,11 @@ Banco Ágil — Agente de Atendimento Inteligente
 | [ADR-006](ADR-006-api-cambio.md) | API de Cotação de Câmbio (Tavily) | ✅ Aceito | 2026-04-22 |
 | [ADR-007](ADR-007-estrutura-codigo.md) | Estrutura de Código e Separação de Responsabilidades | ✅ Aceito | 2026-04-22 |
 | [ADR-008](ADR-008-lead-capture.md) | Lead Capture para Não Clientes (feature extra) | ✅ Aceito | 2026-04-22 |
+| [ADR-009](ADR-009-router-llm.md) | Router de Intenção Baseado em LLM (substitui keyword matching) | ✅ Aceito | 2026-04-22 |
+| [ADR-010](ADR-010-memoria-semantica-qdrant.md) | Memória Semântica por Cliente com Qdrant | ✅ Aceito | 2026-04-22 |
+| [ADR-011](ADR-011-cache-classificador.md) | Cache L1 no Classificador de Intenção | ✅ Aceito | 2026-04-22 |
+| [ADR-012](ADR-012-resiliencia-modelo.md) | Resiliência de Modelo: Retry Exponencial e Fallback entre Tiers | ✅ Aceito | 2026-04-22 |
+| [ADR-013](ADR-013-pipeline-flash-pro.md) | Pipeline Flash→Pro para Decisão de Crédito | ✅ Aceito | 2026-04-22 |
 
 ---
 

@@ -10,9 +10,8 @@ import logging
 from pathlib import Path
 
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 
-from src.config import GEMINI_API_KEY, GEMINI_MODEL, LLM_TEMPERATURE
+from src.infrastructure.model_provider import criar_llm, invocar_com_fallback
 from src.models.state import BancoAgilState
 from src.tools.exchange_rate import criar_tool_cambio
 
@@ -35,11 +34,7 @@ def no_cambio(state: BancoAgilState) -> dict:
     3. LLM recebe o resultado e formula a resposta final
     O router só vê a AIMessage final (sem tool_calls pendentes).
     """
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=LLM_TEMPERATURE,
-        google_api_key=GEMINI_API_KEY,
-    ).bind_tools([_tool_cambio])
+    llm = criar_llm().bind_tools([_tool_cambio])
 
     cliente = state.get("cliente_autenticado", {})
     ultima_msg = state["messages"][-1].content if state["messages"] else ""
@@ -86,11 +81,6 @@ def no_cambio(state: BancoAgilState) -> dict:
             )
 
     # ── 2ª chamada: LLM formula resposta com o resultado da tool ─────────────
-    llm_sem_tools = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=LLM_TEMPERATURE,
-        google_api_key=GEMINI_API_KEY,
-    )
-    resposta_final = llm_sem_tools.invoke(mensagens_com_tool + tool_messages)
+    resposta_final = invocar_com_fallback(mensagens_com_tool + tool_messages)
 
     return {"messages": [resposta_inicial] + tool_messages + [resposta_final]}

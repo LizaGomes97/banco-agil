@@ -9,9 +9,8 @@ import logging
 from pathlib import Path
 
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 
-from src.config import GEMINI_API_KEY, GEMINI_MODEL, LLM_TEMPERATURE
+from src.infrastructure.model_provider import criar_llm, invocar_com_fallback
 from src.models.state import BancoAgilState
 from src.tools.csv_repository import atualizar_score
 from src.tools.score_calculator import calcular_score_credito
@@ -31,11 +30,7 @@ def no_entrevista(state: BancoAgilState) -> dict:
     A tool executa inline, o score é atualizado no CSV e o cliente é
     redirecionado ao Agente de Crédito — tudo no mesmo turno.
     """
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=LLM_TEMPERATURE,
-        google_api_key=GEMINI_API_KEY,
-    ).bind_tools([calcular_score_credito])
+    llm = criar_llm().bind_tools([calcular_score_credito])
 
     cliente = state.get("cliente_autenticado", {})
     ultima_msg = state["messages"][-1].content if state["messages"] else ""
@@ -94,12 +89,7 @@ def no_entrevista(state: BancoAgilState) -> dict:
             updates["agente_ativo"] = "credito"
 
     # ── 2ª chamada: LLM apresenta resultado com o score calculado ────────────
-    llm_sem_tools = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=LLM_TEMPERATURE,
-        google_api_key=GEMINI_API_KEY,
-    )
-    resposta_final = llm_sem_tools.invoke(mensagens_com_tool + tool_messages)
+    resposta_final = invocar_com_fallback(mensagens_com_tool + tool_messages)
 
     updates["messages"] = [resposta_inicial] + tool_messages + [resposta_final]
     return updates

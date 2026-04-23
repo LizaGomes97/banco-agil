@@ -17,10 +17,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from src.config import GEMINI_API_KEY, GEMINI_MODEL
+from src.infrastructure.cache import CacheComTTL, com_cache
 
 logger = logging.getLogger(__name__)
 
 _INTENCOES_VALIDAS = {"credito", "cambio", "encerrar", "nenhum"}
+
+# Cache de 5 minutos — mensagens idênticas não disparam nova chamada LLM
+_cache_intencao = CacheComTTL(ttl_segundos=300, max_tamanho=512)
 
 _PROMPT_CLASSIFICADOR = """\
 Você é um classificador de intenções para um assistente bancário digital chamado Banco Ágil.
@@ -39,6 +43,7 @@ Regra de desempate: se a mensagem citar câmbio/moeda E crédito ao mesmo tempo,
 """
 
 
+@com_cache(_cache_intencao, chave_fn=lambda msg: msg.strip().lower())
 def classificar_intencao(mensagem: str) -> str:
     """Chama o LLM para classificar a intenção do cliente.
 
