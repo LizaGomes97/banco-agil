@@ -105,7 +105,10 @@ services:
       QDRANT_URL: http://qdrant:6333
     volumes:
       - banco-agil-data:/app/data
-      - ./logs:/app/logs
+      # Volume nomeado (não bind mount) pra evitar conflito de UID:
+      # o container roda como UID 1001 e um bind mount em pasta root-owned do host
+      # quebraria o RotatingFileHandler. Docker cria o volume com owner correto.
+      - banco-agil-logs:/app/logs
     networks:
       - banco-agil-net
     ports:
@@ -174,7 +177,7 @@ services:
       QDRANT_URL: http://qdrant:6333
     volumes:
       - banco-agil-data:/app/data
-      - ./logs:/app/logs
+      - banco-agil-logs:/app/logs
     command: ["python", "-m", "src.worker.curator", "--once", "--batch-size", "5"]
     networks:
       - banco-agil-net
@@ -196,6 +199,8 @@ volumes:
     name: banco-agil-qdrant-data
   banco-agil-data:
     name: banco-agil-data
+  banco-agil-logs:
+    name: banco-agil-logs
 
 # ── Rede privada interna ─────────────────────────────────────────────────────
 networks:
