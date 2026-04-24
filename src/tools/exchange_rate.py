@@ -21,9 +21,13 @@ def criar_tool_cambio():
             name="buscar_cotacao_cambio",
             description=(
                 "Busca a cotação atual de moedas estrangeiras em tempo real. "
-                "Use quando o cliente solicitar o valor do dólar, euro, libra ou "
-                "qualquer outra moeda. Formule a query em português, por exemplo: "
-                "'cotação dólar hoje em reais'."
+                "Use quando o cliente solicitar o valor de qualquer moeda estrangeira. "
+                "Formule a query no padrão 'SIGLA BRL exchange rate today', por exemplo: "
+                "'USD BRL exchange rate today' para dólar, "
+                "'EUR BRL exchange rate today' para euro, "
+                "'GBP BRL exchange rate' para libra, "
+                "'100 JPY to BRL exchange rate' para iene (usar 100 unidades), "
+                "'CAD BRL exchange rate' para dólar canadense."
             ),
         )
     except ImportError:
@@ -33,7 +37,10 @@ def criar_tool_cambio():
             name="buscar_cotacao_cambio",
             description=(
                 "Busca a cotação atual de moedas estrangeiras em tempo real. "
-                "Use quando o cliente solicitar o valor do dólar, euro, libra ou "
-                "qualquer outra moeda."
+                "Use quando o cliente solicitar o valor de qualquer moeda estrangeira. "
+                "Formule a query no padrão 'SIGLA BRL exchange rate today', por exemplo: "
+                "'USD BRL exchange rate today' para dólar, "
+                "'GBP BRL exchange rate' para libra, "
+                "'100 JPY to BRL exchange rate' para iene."
             ),
         )

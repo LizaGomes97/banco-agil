@@ -1,0 +1,51 @@
+
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editores e SO
+.vscode/
+.idea/
+.cursor/
+.DS_Store
+Thumbs.db
+
+# Documentação e artefatos
+docs/
+simulador/
+tests/
+frontend/
+backend/
+logs/
+*.log
+*.db
+*.db-journal
+banco_agil.db
+
+# Legado e temporários
+app.py
+tmp/
+temp/
+reports/
+
+# Build do frontend (servido pelo nginx na VPS)
+dist/
+node_modules/

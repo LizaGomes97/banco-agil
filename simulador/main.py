@@ -33,13 +33,18 @@ except ImportError:
 
 from .chat_client import BancoAgilClient
 from .config import BACKEND_URL, CLIENTES, DELAY_ENTRE_PERGUNTAS_S, ClienteSimulado
-from .evaluator import EvaluationResult, avaliar, avaliar_auth
+from .evaluator import EvaluationResult, avaliar, avaliar_auth, avaliar_encerramento, avaliar_pos_encerramento
 from .logging_setup import get_logger, setup_logging
 from .question_bank import (
     QuestionItem,
     get_perguntas_guardrail,
     get_perguntas_pos_auth,
     PERGUNTAS_SAUDACAO,
+    PERGUNTAS_OUTRAS_MOEDAS,
+    PERGUNTAS_PII_OUTPUT,
+    PERGUNTAS_ENTREVISTA_LIMITE,
+    PERGUNTAS_TRANSICAO,
+    PERGUNTAS_ENCERRAMENTO,
 )
 from .reporter import save_json, save_markdown
 
@@ -174,6 +179,149 @@ async def cenario_bloqueio_3_tentativas(cliente: ClienteSimulado, verbose: bool)
     return resultados
 
 
+async def cenario_outras_moedas(cliente: ClienteSimulado, verbose: bool) -> List[EvaluationResult]:
+    """Testa cotações de moedas além de dólar e euro (libra, iene, dólar canadense)."""
+    resultados: List[EvaluationResult] = []
+    logger.info("=== CENÁRIO: outras_moedas | cliente=%s ===", cliente.nome)
+    async with BancoAgilClient() as api:
+        _log(f"\n[bold cyan]▶ Outras moedas:[/bold cyan] {cliente.nome}" if HAS_RICH
+             else f"\n>> Outras moedas: {cliente.nome}")
+        r = await api.autenticar(cliente)
+        if not r.authenticated:
+            logger.warning("Auth falhou — pulando outras_moedas")
+            return resultados
+
+        for item in PERGUNTAS_OUTRAS_MOEDAS:
+            await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
+            resp = await api.chat(item.pergunta)
+            ev = avaliar(resp, item, cliente.nome)
+            resultados.append(ev)
+            _exibir_resultado(ev, resp.reply if verbose else None)
+            if ev.problemas:
+                logger.warning("[%s] score=%.1f problemas=%s | reply='%s'",
+                               item.categoria, ev.score, ev.problemas, resp.reply[:150])
+            else:
+                logger.info("[%s] score=%.1f OK", item.categoria, ev.score)
+
+    logger.info("=== FIM outras_moedas | cliente=%s ===", cliente.nome)
+    return resultados
+
+
+async def cenario_encerramento_voluntario(cliente: ClienteSimulado, verbose: bool) -> List[EvaluationResult]:
+    """Autentica, faz 1 pergunta e encerra com 'tchau' — verifica encerrado=True."""
+    resultados: List[EvaluationResult] = []
+    logger.info("=== CENÁRIO: encerramento_voluntario | cliente=%s ===", cliente.nome)
+    async with BancoAgilClient() as api:
+        _log(f"\n[bold yellow]▶ Encerramento voluntário:[/bold yellow] {cliente.nome}" if HAS_RICH
+             else f"\n>> Encerramento voluntário: {cliente.nome}")
+
+        r = await api.autenticar(cliente)
+        ev_auth = avaliar_auth(r, cliente.nome, esperava_sucesso=True)
+        resultados.append(ev_auth)
+        _exibir_resultado(ev_auth, r.reply if verbose else None)
+        if not r.authenticated:
+            return resultados
+
+        await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
+        for item in PERGUNTAS_ENCERRAMENTO:
+            resp = await api.chat(item.pergunta)
+            ev = avaliar_encerramento(resp, item, cliente.nome, esperava_encerrado=True)
+            resultados.append(ev)
+            _exibir_resultado(ev, resp.reply if verbose else None)
+            logger.info("[encerramento] score=%.1f encerrado=%s", ev.score, resp.encerrado)
+
+        # Pós-encerramento: tenta enviar mais uma mensagem — deve ser bloqueado ou tratado graciosamente
+        await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
+        resp_pos = await api.chat("qual meu limite?")
+        ev_pos = avaliar_pos_encerramento(resp_pos, cliente.nome)
+        resultados.append(ev_pos)
+        _exibir_resultado(ev_pos, resp_pos.reply if verbose else None)
+        logger.info("[pos_encerramento] score=%.1f encerrado=%s", ev_pos.score, resp_pos.encerrado)
+
+    logger.info("=== FIM encerramento_voluntario | cliente=%s ===", cliente.nome)
+    return resultados
+
+
+async def cenario_transicao_topicos(cliente: ClienteSimulado, verbose: bool) -> List[EvaluationResult]:
+    """Conversa longa com troca de tópicos: crédito → câmbio → score → câmbio → entrevista."""
+    resultados: List[EvaluationResult] = []
+    logger.info("=== CENÁRIO: transicao_topicos | cliente=%s ===", cliente.nome)
+    async with BancoAgilClient() as api:
+        _log(f"\n[bold blue]▶ Transição de tópicos:[/bold blue] {cliente.nome}" if HAS_RICH
+             else f"\n>> Transição de tópicos: {cliente.nome}")
+
+        r = await api.autenticar(cliente)
+        if not r.authenticated:
+            logger.warning("Auth falhou — pulando transicao_topicos")
+            return resultados
+
+        for item in PERGUNTAS_TRANSICAO:
+            await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
+            resp = await api.chat(item.pergunta)
+            ev = avaliar(resp, item, cliente.nome)
+            resultados.append(ev)
+            _exibir_resultado(ev, resp.reply if verbose else None)
+            if ev.problemas:
+                logger.warning("[%s] score=%.1f | reply='%s'", item.categoria, ev.score, resp.reply[:150])
+            else:
+                logger.info("[%s] score=%.1f OK", item.categoria, ev.score)
+
+    logger.info("=== FIM transicao_topicos | cliente=%s ===", cliente.nome)
+    return resultados
+
+
+async def cenario_entrevista_limite(cliente: ClienteSimulado, verbose: bool) -> List[EvaluationResult]:
+    """Fluxo completo de solicitação de aumento de limite com score favorável e desfavorável."""
+    resultados: List[EvaluationResult] = []
+    logger.info("=== CENÁRIO: entrevista_limite | cliente=%s ===", cliente.nome)
+    async with BancoAgilClient() as api:
+        _log(f"\n[bold green]▶ Entrevista de limite:[/bold green] {cliente.nome}" if HAS_RICH
+             else f"\n>> Entrevista de limite: {cliente.nome}")
+
+        r = await api.autenticar(cliente)
+        if not r.authenticated:
+            return resultados
+
+        for item in PERGUNTAS_ENTREVISTA_LIMITE:
+            await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
+            resp = await api.chat(item.pergunta)
+            ev = avaliar(resp, item, cliente.nome)
+            resultados.append(ev)
+            _exibir_resultado(ev, resp.reply if verbose else None)
+            logger.info("[%s] score=%.1f | reply='%s'", item.categoria, ev.score, resp.reply[:150])
+
+    logger.info("=== FIM entrevista_limite | cliente=%s ===", cliente.nome)
+    return resultados
+
+
+async def cenario_pii_output(cliente: ClienteSimulado, verbose: bool) -> List[EvaluationResult]:
+    """Verifica que dados pessoais (CPF, data de nascimento) não vazam na saída do agente."""
+    resultados: List[EvaluationResult] = []
+    logger.info("=== CENÁRIO: pii_output | cliente=%s ===", cliente.nome)
+    async with BancoAgilClient() as api:
+        _log(f"\n[bold red]▶ PII Output:[/bold red] {cliente.nome}" if HAS_RICH
+             else f"\n>> PII Output: {cliente.nome}")
+
+        r = await api.autenticar(cliente)
+        if not r.authenticated:
+            return resultados
+
+        for item in PERGUNTAS_PII_OUTPUT:
+            await asyncio.sleep(DELAY_ENTRE_PERGUNTAS_S)
+            resp = await api.chat(item.pergunta)
+            ev = avaliar(resp, item, cliente.nome)
+            resultados.append(ev)
+            _exibir_resultado(ev, resp.reply if verbose else None)
+            if ev.problemas:
+                logger.warning("[pii] POTENCIAL VAZAMENTO de PII: score=%.1f | reply='%s'",
+                               ev.score, resp.reply[:200])
+            else:
+                logger.info("[pii] score=%.1f OK — PII não exposto", ev.score)
+
+    logger.info("=== FIM pii_output | cliente=%s ===", cliente.nome)
+    return resultados
+
+
 async def cenario_guardrail(verbose: bool) -> List[EvaluationResult]:
     """Testa guardrails sem autenticação."""
     resultados: List[EvaluationResult] = []
@@ -273,9 +421,28 @@ async def run_modo_completo(clientes: List[ClienteSimulado], verbose: bool) -> L
     # Bloqueio 3 tentativas (1 cliente basta)
     resultados += await cenario_bloqueio_3_tentativas(clientes[0], verbose)
 
-    # Guardrails (1 sessão anônima)
+    # Guardrails (1 sessão anônima — inclui injeções sofisticadas e tom agressivo)
     resultados += await cenario_guardrail(verbose)
 
+    # Novos cenários de cobertura ampliada
+    resultados += await cenario_outras_moedas(clientes[0], verbose)
+    resultados += await cenario_encerramento_voluntario(clientes[0], verbose)
+    # Transição de tópicos com cliente de score alto (Maria) e baixo (Carlos)
+    for cliente in clientes[1:]:
+        resultados += await cenario_transicao_topicos(cliente, verbose)
+    # Entrevista de limite com perfis diferentes
+    for cliente in clientes:
+        resultados += await cenario_entrevista_limite(cliente, verbose)
+    # PII — 1 cliente é suficiente
+    resultados += await cenario_pii_output(clientes[0], verbose)
+
+    return resultados
+
+
+async def run_modo_seguranca(verbose: bool) -> List[EvaluationResult]:
+    """Foca em guardrails + PII + injeções sofisticadas."""
+    resultados = await cenario_guardrail(verbose)
+    resultados += await cenario_pii_output(CLIENTES[0], verbose)
     return resultados
 
 
@@ -343,6 +510,8 @@ async def main_async(args: argparse.Namespace) -> int:
         resultados = await run_modo_auth(clientes, args.verbose)
     elif args.modo == "guardrail":
         resultados = await run_modo_guardrail(args.verbose)
+    elif args.modo == "seguranca":
+        resultados = await run_modo_seguranca(args.verbose)
     elif args.modo == "rapido":
         resultados = await run_modo_rapido(clientes, args.verbose)
     else:
@@ -383,7 +552,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Simulador de clientes do Banco Ágil")
     parser.add_argument(
         "--modo",
-        choices=["completo", "carga", "auth", "guardrail", "rapido"],
+        choices=["completo", "carga", "auth", "guardrail", "seguranca", "rapido"],
         default="completo",
         help="Modo de execução (padrão: completo)",
     )

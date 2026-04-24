@@ -119,7 +119,7 @@ Inferir pelo histórico de mensagens era ambíguo: tool calls, ToolMessages e AI
 O router é chamado após **cada nó**, potencialmente múltiplas vezes por turno. Usar um LLM ali adicionaria latência significativa e risco de comportamento não-determinístico. A lógica é puramente baseada em campos de estado, tornando-a previsível e testável.
 
 ### Por que handoff implícito (sem mencionar ao cliente)?
-O case técnico exige que o cliente sinta que fala com **um único assistente**. Todos os agentes têm em seu `prompt.md` a regra: "Você é UM ÚNICO assistente. NUNCA mencione transferências ou especialistas." Um filtro regex (`_RE_HANDOFF`) no código de cada agente descarta respostas que violem essa regra.
+O case técnico exige que o cliente sinta que fala com **um único assistente**. Todos os agentes têm em seu `prompt.py` a regra: "Você é UM ÚNICO assistente. NUNCA mencione transferências ou especialistas." Um filtro regex (`_RE_HANDOFF`) no código de cada agente descarta respostas que violem essa regra.
 
 ---
 
@@ -148,10 +148,64 @@ O case técnico exige que o cliente sinta que fala com **um único assistente**.
 
 ---
 
+---
+
+## Evolução do sistema (pós-implementação inicial)
+
+### Roteamento para entrevista: de textual para determinístico
+
+Na implementação inicial, o agente de crédito roteava para a entrevista verificando se o texto da resposta do LLM continha a palavra "entrevista":
+
+```python
+# Antes — frágil e contraditório
+if "entrevista" in texto.lower():
+    return {"agente_ativo": "entrevista", ...}
+```
+
+Isso criava um **catch-22**: o prompt proíbe mencionar nomes de agentes internos, mas o roteamento dependia exatamente dessa menção. Na prática, o roteamento para entrevista nunca ocorria.
+
+**Correção:** O roteamento foi convertido para **determinístico**, baseado diretamente no resultado da tool `verificar_elegibilidade_aumento`. Quando `elegivel=False`, o código roteia para entrevista programaticamente, independente do texto gerado pelo LLM:
+
+```python
+# Depois — determinístico, baseado no resultado da tool
+if elegibilidade_resultado and not elegibilidade_resultado.get("elegivel", True):
+    logger.info("[CREDITO] Score insuficiente — roteando para entrevista")
+    return {
+        "messages": [...],
+        "agente_ativo": "entrevista",
+        "resposta_final": texto_transicao,
+    }
+```
+
+Esse padrão é consistente com a filosofia do ADR: **roteamento baseado em estado, não em inferência do LLM**.
+
+### Autenticação bem-sucedida: mensagem determinística
+
+Na implementação inicial, quando a autenticação era bem-sucedida, o agente retornava `resposta_final=None` e o grafo fazia uma segunda chamada ao nó de triagem para gerar a mensagem de boas-vindas. O LLM, ao ver o histórico de tentativas anteriores, gerava mensagens de falha mesmo com o cliente autenticado.
+
+**Correção:** A mensagem de boas-vindas pós-autenticação é agora **determinística e gerada imediatamente** no mesmo retorno que registra o cliente:
+
+```python
+texto_boas_vindas = (
+    f"Olá, {primeiro_nome}! Identidade verificada com sucesso. "
+    f"Como posso ajudar você hoje?"
+)
+return {
+    "cliente_autenticado": cliente.to_dict(),
+    "messages": [AIMessage(content=texto_boas_vindas)],
+    "resposta_final": texto_boas_vindas,
+}
+```
+
+Isso elimina a segunda passagem pelo LLM e previne confusão com o histórico de falhas.
+
+---
+
 ## Referências
 
 - ADR-001: LangGraph como framework
 - ADR-009: Classificador de intenção via LLM
 - ADR-014: Contratos de resposta (complemento de `resposta_final` com validação de conteúdo)
+- ADR-019: Estrutura de prompts "Quando NÃO usar"
 - `src/models/state.py`
 - `src/graph.py`

@@ -54,7 +54,8 @@ class CampoContrato:
 
     nome: str
     valor_esperado: Any
-    obrigatorio: bool = True   # se False, só valida se o campo for mencionado
+    obrigatorio: bool = True        # se False, só valida se o campo for mencionado
+    apenas_se_reportado: bool = False  # se True, só valida quando a resposta contém dados monetários
     _formatos: list[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -68,6 +69,15 @@ class CampoContrato:
 
     def presente_em(self, texto: str) -> bool:
         return any(fmt in texto for fmt in self._formatos)
+
+    def deve_validar(self, texto: str) -> bool:
+        """Retorna False para campos condicionais em respostas sem dados monetários."""
+        if not self.obrigatorio:
+            return False
+        if self.apenas_se_reportado:
+            # Só valida se a resposta realmente cita valores monetários ou score
+            return bool(re.search(r"R\$\s*[\d.,]+|\b\d{3,}\b", texto))
+        return True
 
     def descricao_corretiva(self) -> str:
         """Texto usado no prompt de correção para este campo."""
@@ -96,7 +106,10 @@ class ResponseContract:
 
     def validar(self, resposta: str) -> tuple[bool, list[CampoContrato]]:
         """Retorna (satisfeito, campos_faltando)."""
-        faltando = [c for c in self.campos if c.obrigatorio and not c.presente_em(resposta)]
+        faltando = [
+            c for c in self.campos
+            if c.deve_validar(resposta) and not c.presente_em(resposta)
+        ]
         return len(faltando) == 0, faltando
 
     # ── Execução com retentativa ──────────────────────────────────────────────
@@ -171,28 +184,56 @@ def contrato_financeiro(
     limite: float | None = None,
     score: int | None = None,
     max_retries: int = 1,
+    apenas_se_reportado: bool = True,
 ) -> ResponseContract:
     """Contrato para respostas que incluem dados financeiros do cliente.
 
     Use quando a resposta DEVE citar o limite e/ou score exatos.
 
     Args:
-        limite:     valor exato de limite_credito do cliente.
-        score:      valor exato de score do cliente.
-        max_retries: tentativas adicionais se o contrato não for satisfeito.
+        limite:              valor exato de limite_credito do cliente.
+        score:               valor exato de score do cliente.
+        max_retries:         tentativas adicionais se o contrato não for satisfeito.
+        apenas_se_reportado: se True (padrão), só valida quando a resposta já cita
+                             valores monetários — evita falsos positivos em perguntas
+                             de esclarecimento (ex.: "qual limite deseja?").
     """
     campos: list[CampoContrato] = []
     if limite is not None:
-        campos.append(CampoContrato(nome="limite_credito", valor_esperado=float(limite)))
+        campos.append(CampoContrato(
+            nome="limite_credito",
+            valor_esperado=float(limite),
+            apenas_se_reportado=apenas_se_reportado,
+        ))
     if score is not None:
-        campos.append(CampoContrato(nome="score", valor_esperado=int(score)))
+        campos.append(CampoContrato(
+            nome="score",
+            valor_esperado=int(score),
+            apenas_se_reportado=apenas_se_reportado,
+        ))
     return ResponseContract(campos=campos, max_retries=max_retries)
 
 
-def contrato_score(score: int, max_retries: int = 1) -> ResponseContract:
-    """Contrato para respostas que incluem apenas o score."""
+def contrato_score(
+    score: int,
+    max_retries: int = 1,
+    apenas_se_reportado: bool = True,
+) -> ResponseContract:
+    """Contrato para respostas que incluem apenas o score.
+
+    Args:
+        score:               valor exato do score esperado.
+        max_retries:         tentativas adicionais se o contrato não for satisfeito.
+        apenas_se_reportado: se True (padrão), só valida quando a resposta cita
+                             algum número ≥ 3 dígitos. Use False quando a resposta
+                             DEVE obrigatoriamente citar o score (ex.: resultado de entrevista).
+    """
     return ResponseContract(
-        campos=[CampoContrato(nome="score", valor_esperado=int(score))],
+        campos=[CampoContrato(
+            nome="score",
+            valor_esperado=int(score),
+            apenas_se_reportado=apenas_se_reportado,
+        )],
         max_retries=max_retries,
     )
 
@@ -220,14 +261,20 @@ def corrigir_com_dados(
             complemento_partes.append(f"Seu score de crédito é {cliente.get('score', 0)}")
 
     if complemento_partes:
-        complemento = " e ".join(complemento_partes) + "."
-        # Tenta substituir um número errado de limite na resposta
-        resposta = _tentar_substituir_valor(resposta, faltando, cliente)
-        # Se ainda faltando, appenda
-        satisfeito_pos = all(c.presente_em(resposta) for c in faltando)
-        if not satisfeito_pos:
-            resposta = resposta.rstrip() + f"\n\n_(Dados confirmados: {complemento})_"
-            logger.info("[CONTRATO] Complemento injetado na resposta.")
+        # Tenta substituir inline um valor errado pelo valor real
+        resposta_corrigida = _tentar_substituir_valor(resposta, faltando, cliente)
+        satisfeito_pos = all(c.presente_em(resposta_corrigida) for c in faltando)
+        if satisfeito_pos:
+            logger.info("[CONTRATO] Valor corrigido inline com sucesso.")
+            resposta = resposta_corrigida
+        else:
+            # Registra a falha internamente — NÃO injeta rodapé visível ao cliente.
+            # A presença de um rodapé de debug na UI é pior do que um valor impreciso.
+            logger.error(
+                "[CONTRATO] Correção inline falhou. Campos não satisfeitos: %s | Resposta: %.200s",
+                [c.nome for c in faltando],
+                resposta,
+            )
 
     return resposta
 

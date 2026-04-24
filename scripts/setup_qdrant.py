@@ -1,24 +1,31 @@
-"""
-Cria as collections do Qdrant para o projeto Banco Ágil.
+"""Cria as collections ativas do Qdrant para o projeto Banco Ágil.
 
-banco_agil_memoria_cliente  — memória semântica por sessão/cliente
-banco_agil_base_conhecimento — FAQ e regras do banco (RAG)
+Coleções criadas (ver ADR-023 — arquitetura de memória de padrões golden):
+  - banco_agil_learned_routing    → exemplos de intenção (input -> intent/agente)
+  - banco_agil_learned_templates  → esqueletos de resposta com placeholders
+
+O `VectorStore` também cria essas coleções automaticamente no primeiro
+acesso, então este script é opcional — útil apenas para provisionar
+previamente antes de rodar o seed (`python scripts/seed_patterns.py`).
+
+Coleções legadas (memoria_cliente, interacoes_curadas, feedbacks_negativos)
+foram removidas da arquitetura; use `scripts/reset_learning_data.py --legacy`
+para limpar resíduos.
 """
 
-import urllib.request
 import json
+import urllib.request
 
-API_KEY = "XM6PAjWTjM44oBRG6M5YV9k3MPhEhFTThOm8VE7N"
-BASE = "http://localhost:6333"
-DIMENSION = 3072  # gemini-embedding-001
+from src.config import QDRANT_API_KEY, QDRANT_EMBEDDING_DIMENSION, QDRANT_URL
+
+API_KEY = QDRANT_API_KEY
+BASE = QDRANT_URL.rstrip("/")
+DIMENSION = QDRANT_EMBEDDING_DIMENSION
 
 
-def criar_collection(nome: str, descricao: str):
+def criar_collection(nome: str, descricao: str) -> None:
     payload = json.dumps({
-        "vectors": {
-            "size": DIMENSION,
-            "distance": "Cosine",
-        }
+        "vectors": {"size": DIMENSION, "distance": "Cosine"},
     }).encode()
 
     req = urllib.request.Request(
@@ -39,15 +46,14 @@ def criar_collection(nome: str, descricao: str):
 
 
 collections = [
-    ("banco_agil_memoria_cliente",   "Memória semântica de interações por cliente"),
-    ("banco_agil_base_conhecimento", "FAQ, regras e produtos do Banco Ágil"),
+    ("banco_agil_learned_routing",   "Roteamento: input -> intent/agente (ADR-023)"),
+    ("banco_agil_learned_templates", "Templates de resposta com placeholders (ADR-023)"),
 ]
 
 print("Criando collections no Qdrant...")
 for nome, desc in collections:
     criar_collection(nome, desc)
 
-# Verifica
 req = urllib.request.Request(f"{BASE}/collections", headers={"api-key": API_KEY})
 with urllib.request.urlopen(req, timeout=5) as r:
     data = json.loads(r.read())

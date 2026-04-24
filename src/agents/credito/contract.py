@@ -36,6 +36,8 @@ def contrato_sintese_pro(cliente: dict, max_retries: int = 1) -> ResponseContrac
 
     O Pro deve comunicar a decisão (aprovado/reprovado) e mencionar
     os valores de limite e score relevantes para o cliente.
+    Como é uma resposta de decisão, a validação é sempre aplicada
+    (apenas_se_reportado=False).
 
     Campos obrigatórios:
         - limite_credito: valor de referência na comunicação da decisão
@@ -45,6 +47,7 @@ def contrato_sintese_pro(cliente: dict, max_retries: int = 1) -> ResponseContrac
         limite=float(cliente.get("limite_credito", 0)),
         score=int(cliente.get("score", 0)),
         max_retries=max_retries,
+        apenas_se_reportado=False,
     )
 
 

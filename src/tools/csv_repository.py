@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from src.config import CLIENTES_CSV, SOLICITACOES_CSV
+from src.config import CLIENTES_CSV, SCORE_LIMITE_CSV, SOLICITACOES_CSV
 from src.models.schemas import Cliente, SolicitacaoAumento
 
 logger = logging.getLogger(__name__)
@@ -73,8 +73,12 @@ def buscar_cliente(cpf: str, data_nascimento: str) -> Optional[Cliente]:
     return None
 
 
-def atualizar_score(cpf: str, novo_score: int) -> bool:
-    """Atualiza o score do cliente no CSV após entrevista de crédito."""
+def _atualizar_campo_cliente(cpf: str, campo: str, valor: str) -> bool:
+    """Atualiza um campo específico do cliente no CSV.
+
+    Usado internamente por `atualizar_score` e `atualizar_limite` para
+    evitar duplicação de lógica de leitura/reescrita.
+    """
     cpf_norm = _normalizar_cpf(cpf)
     linhas: list[dict] = []
     atualizado = False
@@ -85,7 +89,7 @@ def atualizar_score(cpf: str, novo_score: int) -> bool:
             fieldnames = reader.fieldnames or []
             for row in reader:
                 if _normalizar_cpf(row["cpf"]) == cpf_norm:
-                    row["score"] = str(novo_score)
+                    row[campo] = valor
                     atualizado = True
                 linhas.append(row)
 
@@ -96,16 +100,64 @@ def atualizar_score(cpf: str, novo_score: int) -> bool:
                 writer.writerows(linhas)
 
     except Exception as exc:
-        logger.error("Erro ao atualizar score: %s", exc)
+        logger.error("Erro ao atualizar %s do cliente: %s", campo, exc)
         return False
 
     return atualizado
 
 
+def atualizar_score(cpf: str, novo_score: int) -> bool:
+    """Atualiza o score do cliente no CSV após entrevista de crédito."""
+    return _atualizar_campo_cliente(cpf, "score", str(novo_score))
+
+
+def atualizar_limite(cpf: str, novo_limite: float) -> bool:
+    """Atualiza o limite de crédito do cliente no CSV após aprovação."""
+    return _atualizar_campo_cliente(cpf, "limite_credito", f"{novo_limite:.2f}")
+
+
+# ── Tabela score -> limite máximo ────────────────────────────────────────────
+
+def consultar_limite_maximo_por_score(score: int) -> Optional[float]:
+    """Consulta o limite máximo aprovável para um dado score.
+
+    Lê `score_limite.csv` que define faixas (score_min, score_max, limite_maximo).
+    Retorna o limite máximo da faixa em que o score se encontra, ou None se o
+    arquivo não existir ou o score estiver fora de todas as faixas.
+    """
+    try:
+        with open(SCORE_LIMITE_CSV, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                smin = int(row["score_min"])
+                smax = int(row["score_max"])
+                if smin <= score <= smax:
+                    return float(row["limite_maximo"])
+    except FileNotFoundError:
+        logger.error("score_limite.csv não encontrado em %s", SCORE_LIMITE_CSV)
+    except Exception as exc:
+        logger.error("Erro ao ler score_limite.csv: %s", exc)
+    return None
+
+
 # ── Solicitações ──────────────────────────────────────────────────────────────
 
-def registrar_solicitacao(solicitacao: SolicitacaoAumento) -> bool:
-    """Registra uma nova solicitação de aumento de limite no CSV."""
+def registrar_solicitacao(
+    cpf: str,
+    limite_atual: float,
+    novo_limite: float,
+    status: str = "pendente",
+) -> Optional[str]:
+    """Registra uma nova solicitação de aumento de limite em CSV.
+
+    Retorna o id da solicitação (protocolo) em sucesso, None em falha.
+    Normaliza cpf antes de persistir.
+    """
+    solicitacao = SolicitacaoAumento(
+        cpf=_normalizar_cpf(cpf),
+        limite_atual=float(limite_atual),
+        limite_solicitado=float(novo_limite),
+        status=status,
+    )
     existe = SOLICITACOES_CSV.exists()
 
     try:
@@ -114,10 +166,10 @@ def registrar_solicitacao(solicitacao: SolicitacaoAumento) -> bool:
             if not existe or SOLICITACOES_CSV.stat().st_size == 0:
                 writer.writeheader()
             writer.writerow(solicitacao.to_dict())
-        return True
+        return solicitacao.id
     except Exception as exc:
         logger.error("Erro ao registrar solicitação: %s", exc)
-        return False
+        return None
 
 
 def atualizar_status_solicitacao(solicitacao_id: str, novo_status: str) -> bool:

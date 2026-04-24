@@ -59,3 +59,47 @@ class BancoAgilState(TypedDict):
     A API lê este campo diretamente — sem precisar inferir pelo histórico de msgs.
     Cada nó SEMPRE retorna este campo (str ou None) para resetar entre turnos.
     """
+
+    turno_id: Optional[str]
+    """ID do turno registrado no staging (ver ADR-023).
+
+    Preenchido pelo nó `registrar_turno` após cada resposta. A API expõe
+    este id ao frontend para que o botão thumbs up/down possa referenciar
+    exatamente o turno avaliado. None enquanto o turno ainda não foi
+    persistido (antes do `registrar_turno`) ou quando a gravação falhou.
+    """
+
+    intent_detectada: Optional[str]
+    """Última intenção classificada pelo intent_classifier.
+
+    Propagada pelos agentes para o staging — permite filtrar o dashboard
+    de curadoria por intenção ("mostrar apenas turnos de crédito").
+    """
+
+    session_id: Optional[str]
+    """Identificador da sessão (thread_id do LangGraph).
+
+    Preenchido pela API em cada /api/chat para que o nó `registrar_turno`
+    consiga associar cada turno ao checkpoint da conversa. É só uma cópia
+    do thread_id do configurable — LangGraph não expõe isso no state por padrão.
+    """
+
+    pedido_pendente: Optional[dict]
+    """Solicitação de aumento que aguarda retomada após entrevista de crédito.
+
+    Preenchido pelo agente de crédito quando uma solicitação é rejeitada
+    e o cliente aceita passar pela entrevista. Após a entrevista atualizar
+    o score, o agente de crédito usa este campo para retomar o pedido sem
+    perguntar o valor novamente.
+    Exemplo: {"limite_solicitado": 7000.0, "limite_atual": 5000.0}
+    None quando não há pedido em andamento.
+    """
+
+    aguardando_confirmacao: Optional[str]
+    """Sinaliza que o agente fez uma pergunta de confirmação no turno anterior
+    e agora aguarda sim/não do cliente. Valores possíveis:
+      - "entrevista" -> cliente foi perguntado se quer fazer entrevista de crédito
+      - "retomada"   -> cliente foi perguntado se quer retomar pedido após novo score
+      - None         -> nenhum consentimento pendente
+    Permite que o agente trate a próxima mensagem como resposta binária
+    sem precisar re-classificar como nova intenção."""

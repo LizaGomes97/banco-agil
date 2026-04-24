@@ -10,23 +10,19 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 
 from langchain_core.messages import AIMessage, SystemMessage
 
 from src.config import MAX_TENTATIVAS_AUTH
-from src.infrastructure.model_provider import invocar_com_fallback
-from src.infrastructure.qdrant_memory import buscar_memorias
+from src.infrastructure.model_provider import invocar_com_fallback, normalizar_content
 from src.models.state import BancoAgilState
 from src.tools.csv_repository import buscar_cliente
 from src.tools.intent_classifier import classificar_intencao
 
 from .contract import contrato_consulta_financeira, corrigir_resposta
+from .prompt import build_system_prompt
 
 logger = logging.getLogger(__name__)
-
-_PROMPT_PATH = Path(__file__).parent / "prompt.md"
-_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 
 _INTENCOES_ENCERRAR = {"encerrar", "tchau", "sair", "até logo", "ate logo", "obrigado"}
 
@@ -58,7 +54,7 @@ def _sanitizar(texto: str) -> str | None:
 def _invocar_llm_seguro(messages: list, fallback_msg: str, hints: list | None = None) -> str:
     msgs = messages + (hints or [])
     resposta = invocar_com_fallback(msgs)
-    raw = getattr(resposta, "content", "") or ""
+    raw = normalizar_content(getattr(resposta, "content", None))
     logger.debug("[TRIAGEM] LLM raw: %.200s", raw)
     texto = _sanitizar(raw)
     if not texto:
@@ -67,9 +63,15 @@ def _invocar_llm_seguro(messages: list, fallback_msg: str, hints: list | None = 
     return texto
 
 
-def _identificar_agente(mensagem: str) -> str | None:
+def _identificar_agente(mensagem: str) -> tuple[str | None, str]:
+    """Classifica a mensagem e retorna (agente_ou_None, intencao_bruta).
+
+    A intenção bruta é propagada para o state para aparecer no staging
+    de curadoria — mesmo quando é "nenhum" ou "encerrar".
+    """
     intencao = classificar_intencao(mensagem)
-    return None if intencao == "nenhum" else intencao
+    agente = None if intencao in ("nenhum",) else intencao
+    return agente, intencao
 
 
 def _extrair_cpf(texto: str) -> str | None:
@@ -98,32 +100,29 @@ def no_triagem(state: BancoAgilState) -> dict:
 
         if agente_atual != "triagem":
             if any(p in ultima_msg_lower for p in _INTENCOES_ENCERRAR):
-                return {"encerrado": True, "resposta_final": None}
-            novo_agente = _identificar_agente(ultima_msg)
+                return {"encerrado": True, "resposta_final": None, "intent_detectada": "encerrar"}
+            novo_agente, intencao_bruta = _identificar_agente(ultima_msg)
             if novo_agente and novo_agente != "encerrar" and novo_agente != agente_atual:
-                return {"agente_ativo": novo_agente, "resposta_final": None}
-            return {"resposta_final": None}
+                return {
+                    "agente_ativo": novo_agente,
+                    "resposta_final": None,
+                    "intent_detectada": intencao_bruta,
+                }
+            return {"resposta_final": None, "intent_detectada": intencao_bruta}
 
-        agente = _identificar_agente(ultima_msg)
+        agente, intencao_bruta = _identificar_agente(ultima_msg)
         if agente == "encerrar":
-            return {"encerrado": True, "resposta_final": None}
+            return {"encerrado": True, "resposta_final": None, "intent_detectada": "encerrar"}
         if agente in ("credito", "cambio", "entrevista"):
-            return {"agente_ativo": agente, "resposta_final": None}
+            return {
+                "agente_ativo": agente,
+                "resposta_final": None,
+                "intent_detectada": intencao_bruta,
+            }
 
         # Sem intenção clara: LLM responde com dados reais do cliente
         cliente = state["cliente_autenticado"]
-        limite = float(cliente.get("limite_credito", 0))
-        score = int(cliente.get("score", 0))
-
-        contexto = (
-            f"\n\n## Dados do cliente autenticado\n"
-            f"- Nome: {cliente.get('nome', '')}\n"
-            f"- CPF: {cliente.get('cpf', '')}\n"
-            f"- Limite de crédito disponível: R$ {limite:,.2f}\n"
-            f"- Score de crédito: {score}\n"
-            f"\nIMPORTANTE: use EXATAMENTE os valores acima. Nunca invente ou arredonde valores financeiros."
-        )
-        messages = [SystemMessage(content=_SYSTEM_PROMPT + contexto)] + list(state["messages"])
+        messages = [SystemMessage(content=build_system_prompt(cliente))] + list(state["messages"])
 
         contrato = contrato_consulta_financeira(cliente)
 
@@ -138,52 +137,85 @@ def no_triagem(state: BancoAgilState) -> dict:
             invocar_fn=_invocar,
             corrigir_fn=lambda r, f: corrigir_resposta(r, f, cliente),
         )
-        return {"messages": [AIMessage(content=texto)], "resposta_final": texto}
+        return {
+            "messages": [AIMessage(content=texto)],
+            "resposta_final": texto,
+            "intent_detectada": intencao_bruta,
+        }
 
     # ── Não autenticado: verificar se temos CPF + data ───────────────────────
-    historico = " ".join(
-        m.content for m in state["messages"] if hasattr(m, "content")
-    ).lower()
+    # Busca CPF e data APENAS na mensagem atual para evitar que dados errados
+    # de tentativas anteriores (ainda no histórico) poluam a extração.
+    cpf_detectado = _extrair_cpf(ultima_msg)
+    data_detectada = _extrair_data(ultima_msg)
 
-    cpf_detectado = _extrair_cpf(historico)
-    data_detectada = _extrair_data(historico)
+    # Fallback: procura nas 3 mensagens mais recentes (caso o usuário envie
+    # CPF e data em mensagens separadas — cenário raro com o AuthCard).
+    if not (cpf_detectado and data_detectada):
+        recentes = " ".join(
+            m.content for m in state["messages"][-3:] if hasattr(m, "content")
+        )
+        if not cpf_detectado:
+            cpf_detectado = _extrair_cpf(recentes)
+        if not data_detectada:
+            data_detectada = _extrair_data(recentes)
 
     if cpf_detectado and data_detectada:
         cliente = buscar_cliente(cpf_detectado, data_detectada)
         if cliente:
             logger.info("Cliente autenticado: %s", cliente.cpf)
-            memorias = buscar_memorias(
-                cpf=cliente.cpf,
-                consulta=ultima_msg or "atendimento bancário",
-                top_k=3,
+            # ADR-023: não carregamos mais "memórias" por CPF do Qdrant.
+            # Dados do cliente são voláteis e vêm das tools (CSV).
+            # `memoria_cliente` permanece no state apenas para compatibilidade
+            # com código downstream que ainda lê o campo — sempre lista vazia.
+            primeiro_nome = cliente.nome.split()[0] if cliente.nome else "Cliente"
+            texto_boas_vindas = (
+                f"Olá, {primeiro_nome}! Identidade verificada com sucesso. "
+                f"Como posso ajudar você hoje? "
+                f"Posso consultar seu limite de crédito, score, cotações de câmbio e mais."
             )
             return {
                 "cliente_autenticado": cliente.to_dict(),
                 "tentativas_auth": 0,
                 "agente_ativo": "triagem",
-                "memoria_cliente": memorias,
+                "memoria_cliente": [],
                 "memoria_salva": False,
-                "resposta_final": None,
+                "messages": [AIMessage(content=texto_boas_vindas)],
+                "resposta_final": texto_boas_vindas,
             }
         else:
             tentativas = state.get("tentativas_auth", 0) + 1
             logger.warning("Falha na autenticação — tentativa %d", tentativas)
-            messages = [SystemMessage(content=_SYSTEM_PROMPT)] + list(state["messages"])
-            texto = _invocar_llm_seguro(
-                messages,
-                fallback_msg="Não encontrei seus dados. Verifique o CPF e a data de nascimento e tente novamente.",
+
+            # Mensagem determinística para evitar que o LLM alucine
+            # "verificado com sucesso" ou invente nomes.
+            if tentativas >= MAX_TENTATIVAS_AUTH:
+                texto = (
+                    "Não foi possível verificar sua identidade após múltiplas tentativas. "
+                    "Por segurança, o atendimento foi encerrado. "
+                    "Entre em contato com nossa central de atendimento para obter suporte."
+                )
+                return {
+                    "messages": [AIMessage(content=texto)],
+                    "tentativas_auth": tentativas,
+                    "resposta_final": texto,
+                    "encerrado": True,
+                }
+
+            restantes = MAX_TENTATIVAS_AUTH - tentativas
+            texto = (
+                f"Não consegui verificar sua identidade com os dados informados. "
+                f"Por favor, verifique o CPF e a data de nascimento e tente novamente. "
+                f"Você ainda tem {restantes} tentativa{'s' if restantes > 1 else ''}."
             )
-            updates: dict = {
+            return {
                 "messages": [AIMessage(content=texto)],
                 "tentativas_auth": tentativas,
                 "resposta_final": texto,
             }
-            if tentativas >= MAX_TENTATIVAS_AUTH:
-                updates["encerrado"] = True
-            return updates
 
     # ── Sem dados suficientes: LLM conduz a coleta ───────────────────────────
-    messages = [SystemMessage(content=_SYSTEM_PROMPT)] + list(state["messages"])
+    messages = [SystemMessage(content=build_system_prompt())] + list(state["messages"])
     texto = _invocar_llm_seguro(
         messages,
         fallback_msg="Por favor, informe seu CPF e data de nascimento para continuar.",

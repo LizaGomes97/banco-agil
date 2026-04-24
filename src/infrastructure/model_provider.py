@@ -7,9 +7,11 @@ de forma controlada, informando o cliente sobre o problema de maneira
 clara [...] sem interromper abruptamente a interação".
 
 Tiers configurados:
-  fast  → gemini-2.0-flash       (default — rápido e barato)
+  fast  → gemini-2.5-flash       (default — rápido, moderno, estável)
   pro   → gemini-2.5-pro         (análises mais complexas)
-  lite  → gemini-2.0-flash-lite  (fallback final — menor custo)
+  lite  → gemini-2.5-flash-lite  (fallback final — menor custo)
+
+Nota: modelos 2.0-flash foram descontinuados ou têm quota restritiva em 2026.
 """
 from __future__ import annotations
 
@@ -23,10 +25,40 @@ from src.config import GEMINI_API_KEY, GEMINI_MODEL, LLM_TEMPERATURE
 
 logger = logging.getLogger(__name__)
 
+def normalizar_content(content: Any) -> str:
+    """Normaliza o campo `content` de uma AIMessage para string.
+
+    O Gemini 2.5, quando usa tool_calls ou partes estruturadas, às vezes retorna
+    `content` como `list[dict | str]` em vez de `str`. Sem essa normalização,
+    `(msg.content or "").strip()` explode com AttributeError.
+
+    Regras:
+      - None → ""
+      - str  → retorna como está
+      - list → concatena partes de texto; ignora dicts sem "text"
+      - outros tipos → str(content)
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        partes: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                partes.append(item)
+            elif isinstance(item, dict):
+                texto = item.get("text") or item.get("content") or ""
+                if isinstance(texto, str):
+                    partes.append(texto)
+        return "".join(partes)
+    return str(content)
+
+
 _MODELOS: dict[str, str] = {
-    "fast": GEMINI_MODEL,                # gemini-2.0-flash (configurável via .env)
+    "fast": GEMINI_MODEL,                # gemini-2.5-flash (configurável via .env)
     "pro": "gemini-2.5-pro",
-    "lite": "gemini-2.0-flash-lite",
+    "lite": "gemini-2.5-flash-lite",
 }
 
 # Ordem de fallback: se "fast" falhar, tenta "lite"

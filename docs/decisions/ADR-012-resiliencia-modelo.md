@@ -27,10 +27,12 @@ Centralizar toda invocação de LLM em `src/infrastructure/model_provider.py` co
 
 **Tiers de modelo:**
 ```
-fast  → gemini-2.0-flash      (padrão — rápido e barato)
+fast  → gemini-2.5-flash      (padrão — rápido, estável, ativo em 2026)
 pro   → gemini-2.5-pro        (análises complexas — Fase 2 do crédito)
-lite  → gemini-2.0-flash-lite (fallback final — menor custo e quota)
+lite  → gemini-2.5-flash-lite (fallback final — menor custo)
 ```
+
+> **Migração 23/04/2026:** Os modelos `gemini-2.0-flash` e `gemini-2.0-flash-lite` foram substituídos pelas versões 2.5 equivalentes após diagnóstico de erros `429 Resource Exhausted` sistemáticos. Ver ADR-002.
 
 **Cadeia de fallback:**
 ```

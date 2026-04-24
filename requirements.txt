@@ -9,6 +9,14 @@ langgraph>=0.2.0
 redis>=5.0.0
 langgraph-checkpoint-redis>=0.0.1
 
+# ── Persistência relacional (staging de curadoria + observabilidade) ─────────
+# SQLite como default para dev; Postgres (asyncpg) em produção. Ver ADR-023.
+aiosqlite>=0.20.0
+asyncpg>=0.29.0
+
+# ── Qdrant (vetorial async) ──────────────────────────────────────────────────
+qdrant-client>=1.11.0
+
 # ── Busca web (câmbio) ────────────────────────────────────────────────────────
 tavily-python>=0.3.0
 

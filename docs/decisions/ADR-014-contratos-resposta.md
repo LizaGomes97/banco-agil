@@ -140,7 +140,7 @@ Cada agente tem responsabilidades diferentes:
 - Um contrato global não captura essas nuances.
 
 ### Por que `corrigir_com_dados` como último recurso?
-Garante que o cliente **sempre** vê o dado correto, mesmo em caso de falha persistente do LLM. É preferível uma resposta com um parágrafo extra "_Dados confirmados: seu limite é R$ 3.000,00_" do que uma resposta com valor incorreto.
+Garante que o cliente vê o dado correto via substituição inline quando possível. Se a substituição falhar, o erro é logado internamente — o fallback visível ao cliente foi removido (ver "Evolução do sistema" abaixo).
 
 ---
 
@@ -183,11 +183,61 @@ Garante que o cliente **sempre** vê o dado correto, mesmo em caso de falha pers
 
 ---
 
+---
+
+## Evolução do sistema (pós-implementação inicial)
+
+### Problema: rodapé `_(Dados confirmados: ...)_` visível ao cliente
+
+O fallback `corrigir_com_dados` originalmente injetava um rodapé literal na mensagem:
+
+```
+_(Dados confirmados: Seu limite de crédito disponível é R$ 5.000,00 e Seu score de crédito é 650.)_
+```
+
+Esse texto aparecia em **todas** as mensagens onde o contrato falhava — inclusive em perguntas de esclarecimento como "Qual limite você deseja?" (que legitimamente não contêm valores financeiros). Isso criava ruído visual e expunha informações de debug ao cliente.
+
+**Correção:** O rodapé foi removido de `corrigir_com_dados`. Falhas persistentes são registradas via `logger.error` para análise interna, sem impacto na mensagem exibida ao cliente.
+
+### Problema: validação disparando em respostas sem dados financeiros
+
+O contrato `contrato_flash_direto` exigia `limite_credito` + `score` em **toda** resposta do agente de crédito — inclusive perguntas de coleta como "Qual valor de limite você gostaria?". Como a pergunta não continha esses valores, o contrato falhava e o fallback era acionado desnecessariamente.
+
+**Correção:** Introduzido o campo `apenas_se_reportado: bool` em `CampoContrato`. Quando `True` (padrão para contratos financeiros), a validação só ocorre se a resposta já contém dados monetários (`R$\s*[\d.,]+`). Respostas que são perguntas de esclarecimento passam automaticamente sem validação.
+
+```python
+@dataclass
+class CampoContrato:
+    nome: str
+    valor_esperado: Any
+    obrigatorio: bool = True
+    apenas_se_reportado: bool = False  # novo campo
+
+    def deve_validar(self, texto: str) -> bool:
+        if not self.obrigatorio:
+            return False
+        if self.apenas_se_reportado:
+            return bool(re.search(r"R\$\s*[\d.,]+|\b\d{3,}\b", texto))
+        return True
+```
+
+### Comportamento atual dos contratos por contexto
+
+| Contexto | `apenas_se_reportado` | Resultado |
+|---|---|---|
+| Triagem / crédito informando saldo (cita R$) | `True` → valida | Corrige valor errado inline |
+| Crédito perguntando "qual limite deseja?" | `True` → **pula** | Sem retry desnecessário |
+| Pro após decisão de elegibilidade | `False` → sempre valida | Garante que a decisão cite os valores |
+| Entrevista resultado final do score | `False` → sempre valida | Garante que o novo score seja informado |
+
+---
+
 ## Referências
 
 - ADR-003: Contrato `resposta_final` (garantia de roteamento)
 - ADR-007: Estrutura modular por agente
 - ADR-012: Resiliência com fallback de modelo
+- ADR-019: Estrutura de prompts "Quando NÃO usar" (camada complementar)
 - `src/infrastructure/response_contract.py`
 - `src/agents/*/contract.py`
 - Artigo: _"Otimização de Guardrails de Segurança em Agentes Conversacionais"_ (docs/)

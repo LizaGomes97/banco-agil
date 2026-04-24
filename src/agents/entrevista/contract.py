@@ -20,10 +20,13 @@ def contrato_resultado_entrevista(novo_score: int, max_retries: int = 1) -> Resp
     Garante que o LLM informe o valor exato do novo score ao cliente,
     sem arredondar ou substituir por um valor diferente.
 
+    Validação sempre aplicada (apenas_se_reportado=False): ao final da
+    entrevista, a resposta DEVE obrigatoriamente mencionar o score calculado.
+
     Campos obrigatórios:
         - score: novo valor calculado por calcular_score_credito
     """
-    return contrato_score(score=novo_score, max_retries=max_retries)
+    return contrato_score(score=novo_score, max_retries=max_retries, apenas_se_reportado=False)
 
 
 def contrato_coleta_dados() -> ResponseContract:

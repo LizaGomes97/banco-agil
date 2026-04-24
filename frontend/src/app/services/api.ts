@@ -33,6 +33,7 @@ export interface SendChatResult {
   conversationId: string;
   authenticated: boolean;
   encerrado: boolean;
+  turnoId?: string;
 }
 
 export async function sendChatMessage(params: SendChatParams): Promise<SendChatResult> {
@@ -64,12 +65,34 @@ export async function sendChatMessage(params: SendChatParams): Promise<SendChatR
   const convId =
     typeof data?.conversation_id === 'string' ? data.conversation_id : undefined;
 
+  const turnoId = typeof data?.turno_id === 'string' ? data.turno_id : undefined;
+
   return {
     reply: reply || '_Sem conteúdo na resposta._',
     conversationId: convId || params.conversationId || '',
     authenticated: Boolean(data?.authenticated),
     encerrado: Boolean(data?.encerrado),
+    turnoId,
   };
+}
+
+// ── Feedback (thumbs up/down) ────────────────────────────────────────────────
+
+export type FeedbackValue = 1 | -1;
+
+export async function sendFeedback(
+  turnoId: string,
+  feedback: FeedbackValue,
+): Promise<void> {
+  const res = await fetch(`${getApiBase()}/api/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turno_id: turnoId, feedback }),
+  });
+  if (!res.ok) {
+    const data = (await parseJsonSafe(res)) as { detail?: string } | null;
+    throw new Error(data?.detail || `feedback: HTTP ${res.status}`);
+  }
 }
 
 // ── Conversas ─────────────────────────────────────────────────────────────────
@@ -116,6 +139,8 @@ export interface ApiMessageRow {
 export interface ConversationDetail {
   session: SessionSummary;
   messages: ApiMessageRow[];
+  authenticated: boolean;
+  encerrado: boolean;
 }
 
 export async function fetchConversationDetail(
@@ -131,7 +156,12 @@ export async function fetchConversationDetail(
   if (!res.ok || !data?.messages) {
     throw new Error(`carregar conversa: HTTP ${res.status}`);
   }
-  return data;
+  return {
+    session: data.session,
+    messages: data.messages,
+    authenticated: Boolean(data.authenticated),
+    encerrado: Boolean(data.encerrado),
+  };
 }
 
 export function apiMessageToUi(m: ApiMessageRow): {

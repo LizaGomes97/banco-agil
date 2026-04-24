@@ -1,0 +1,180 @@
+{
+  "version": "1.0",
+  "description": "Golden set curado manualmente. Fonte de verdade para roteamento, templates de resposta e lições gerais. NUNCA contém PII nem valores de cliente — apenas padrões agnósticos.",
+  "_schema": {
+    "routing": "1 ponto por exemplo no Qdrant (learned_routing). Alimenta o intent_classifier via k-NN.",
+    "templates": "1 ponto por template no Qdrant (learned_templates). Esqueletos com placeholders; agentes consultam e injetam no prompt.",
+    "licoes": "1 linha por lição no SQLite (curator_lessons). Entra na seção 'Regras ativas' do system prompt. Filtradas por 'aplicavel_a'."
+  },
+
+  "routing": [
+    {
+      "id": "rout-cambio-cotacao",
+      "intent": "cambio",
+      "agente": "cambio",
+      "exemplos": [
+        "qual a cotação do dólar hoje",
+        "quanto tá o euro",
+        "valor do dólar agora",
+        "me dá a cotação do usd"
+      ],
+      "nota": "Consulta direta de cotação de moeda estrangeira."
+    },
+    {
+      "id": "rout-cambio-conversao",
+      "intent": "cambio",
+      "agente": "cambio",
+      "exemplos": [
+        "quero converter 500 reais em dólar",
+        "quanto dá 1000 reais em euros",
+        "converte pra mim 200 dólares em real"
+      ],
+      "nota": "Conversão de valor entre moedas."
+    },
+
+    {
+      "id": "rout-credito-aumento",
+      "intent": "credito",
+      "agente": "credito",
+      "exemplos": [
+        "quero aumentar meu limite",
+        "preciso pedir aumento de limite do cartão",
+        "como faço pra solicitar mais limite"
+      ],
+      "nota": "Pedido explícito de aumento de limite."
+    },
+    {
+      "id": "rout-credito-emprestimo",
+      "intent": "credito",
+      "agente": "credito",
+      "exemplos": [
+        "preciso de um empréstimo",
+        "quero simular um empréstimo pessoal",
+        "tem como eu pegar dinheiro emprestado"
+      ],
+      "nota": "Solicitação de empréstimo (ação, não apenas consulta)."
+    },
+
+    {
+      "id": "rout-encerrar",
+      "intent": "encerrar",
+      "agente": "triagem",
+      "exemplos": [
+        "obrigado, pode encerrar",
+        "é só isso, valeu",
+        "pode fechar o atendimento",
+        "tchau"
+      ],
+      "nota": "Usuário encerra a conversa."
+    },
+
+    {
+      "id": "rout-entrevista-abertura",
+      "intent": "nenhum",
+      "agente": "entrevista",
+      "exemplos": [
+        "quero abrir uma conta",
+        "como faço pra virar cliente",
+        "quero conhecer os produtos de vocês"
+      ],
+      "nota": "Prospect / onboarding — cai na entrevista."
+    }
+  ],
+
+  "templates": [
+    {
+      "id": "tmpl-cambio-cotacao",
+      "intent": "cambio",
+      "agente": "cambio",
+      "situacao": "cliente pergunta cotação de moeda suportada",
+      "esqueleto": "A cotação atual do {moeda} está em R$ {valor}. Esse valor é referencial e pode variar ao longo do dia. Quer converter um valor específico?",
+      "placeholders": ["moeda", "valor"],
+      "tool_fonte": "exchange_rate",
+      "evitar": [
+        "citar cotação sem chamar a tool exchange_rate",
+        "prometer que o valor será mantido",
+        "responder sobre moedas não suportadas sem avisar"
+      ]
+    },
+    {
+      "id": "tmpl-cambio-moeda-nao-suportada",
+      "intent": "cambio",
+      "agente": "cambio",
+      "situacao": "cliente pede cotação de moeda que exchange_rate não cobre",
+      "esqueleto": "Infelizmente não tenho cotação de {moeda} no momento. As moedas que consigo consultar agora são: {moedas_suportadas}. Alguma dessas resolve?",
+      "placeholders": ["moeda", "moedas_suportadas"],
+      "tool_fonte": "exchange_rate",
+      "evitar": ["inventar cotação", "dizer que não existe a moeda"]
+    },
+
+    {
+      "id": "tmpl-credito-aumento-elegivel",
+      "intent": "credito",
+      "agente": "credito",
+      "situacao": "cliente autenticado pede aumento de limite e é elegível",
+      "esqueleto": "Seu limite atual é de R$ {limite_atual}. Com base no seu perfil, posso encaminhar um pedido de aumento para até R$ {limite_sugerido}. A resposta costuma sair em até {prazo}. Posso seguir com o pedido?",
+      "placeholders": ["limite_atual", "limite_sugerido", "prazo"],
+      "tool_fonte": "consultar_cliente_por_cpf",
+      "evitar": ["prometer aprovação", "inventar prazo"]
+    },
+    {
+      "id": "tmpl-credito-nao-elegivel",
+      "intent": "credito",
+      "agente": "credito",
+      "situacao": "cliente não é elegível para aumento no momento",
+      "esqueleto": "No momento não consigo encaminhar um aumento de limite porque {motivo_generico}. Posso te explicar o que costuma ajudar a aumentar a elegibilidade?",
+      "placeholders": ["motivo_generico"],
+      "tool_fonte": "consultar_cliente_por_cpf",
+      "evitar": ["expor score numérico", "culpar o cliente"]
+    },
+
+    {
+      "id": "tmpl-encerrar",
+      "intent": "encerrar",
+      "agente": "triagem",
+      "situacao": "usuário sinaliza fim da conversa",
+      "esqueleto": "Por nada! Qualquer coisa, é só chamar. Tenha um bom dia.",
+      "placeholders": [],
+      "tool_fonte": null,
+      "evitar": ["adicionar CTA de venda", "prolongar a conversa"]
+    }
+  ],
+
+  "licoes": [
+    {
+      "id": "lesson-cambio-tool-obrigatoria",
+      "regra": "Nunca responder cotação ou conversão de câmbio sem antes chamar a tool exchange_rate. Se a tool falhar, dizer que o serviço está indisponível no momento.",
+      "motivo": "Alucinação recorrente quando o modelo responde de memória.",
+      "aplicavel_a": ["cambio"],
+      "ativa": true
+    },
+    {
+      "id": "lesson-credito-tool-obrigatoria",
+      "regra": "Nunca citar limite, score ou saldo sem antes chamar consultar_cliente_por_cpf no mesmo turno. Dados voláteis; memorizar número leva a erro.",
+      "motivo": "Dados de cliente mudam; memória não é fonte.",
+      "aplicavel_a": ["credito"],
+      "ativa": true
+    },
+    {
+      "id": "lesson-pii-minima",
+      "regra": "Não repita CPF completo, data de nascimento nem endereço na resposta. Use apenas 'confirmo seus dados' ou os últimos 4 dígitos quando necessário.",
+      "motivo": "Boa prática de LGPD e redução de risco em logs.",
+      "aplicavel_a": ["triagem", "credito", "cambio", "entrevista"],
+      "ativa": true
+    },
+    {
+      "id": "lesson-escopo",
+      "regra": "Se a pergunta do cliente cair fora de câmbio, crédito ou onboarding, diga educadamente que não é a área certa e ofereça transferir para um atendente humano.",
+      "motivo": "Evitar alucinação em domínios fora de escopo.",
+      "aplicavel_a": ["triagem", "credito", "cambio", "entrevista"],
+      "ativa": true
+    },
+    {
+      "id": "lesson-nao-prometer",
+      "regra": "Nunca prometer aprovação, prazo específico ou valor que dependa de análise humana. Use 'costuma ser', 'em geral', 'posso encaminhar'.",
+      "motivo": "Gera expectativa errada no cliente.",
+      "aplicavel_a": ["credito", "entrevista"],
+      "ativa": true
+    }
+  ]
+}

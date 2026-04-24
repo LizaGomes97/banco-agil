@@ -86,20 +86,21 @@ class TestRegistrarSolicitacao:
     def test_registra_com_sucesso(self, solicitacoes_csv):
         from src.tools import csv_repository
         with patch.object(csv_repository, "SOLICITACOES_CSV", solicitacoes_csv):
-            sol = SolicitacaoAumento(
+            protocolo = csv_repository.registrar_solicitacao(
                 cpf="123.456.789-00",
                 limite_atual=5000.0,
-                limite_solicitado=10000.0,
+                novo_limite=10000.0,
                 status="aprovado",
             )
-            resultado = csv_repository.registrar_solicitacao(sol)
-        assert resultado is True
+        assert isinstance(protocolo, str) and len(protocolo) >= 4
 
         with open(solicitacoes_csv, encoding="utf-8") as f:
             linhas = list(csv.DictReader(f))
         assert len(linhas) == 1
         assert linhas[0]["status"] == "aprovado"
-        assert linhas[0]["cpf"] == "123.456.789-00"
+        # cpf é normalizado (apenas dígitos) na persistência
+        assert linhas[0]["cpf"] == "12345678900"
+        assert linhas[0]["id"] == protocolo
 
 
 class TestAtualizarScore:

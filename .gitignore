@@ -2,6 +2,11 @@
 .env
 backend/
 
+# ── Documentação interna de deploy (contém nomes de containers da VPS) ───────
+# Arquivos em `deploy/` genéricos (Dockerfile, compose, nginx, swap) VÃO para o
+# repo; o passo-a-passo específico da infraestrutura fica fora.
+deploy/DEPLOY.md
+
 # ── Simulador ────────────────────────────────────────────────────────────────
 simulador/reports/*.json
 simulador/reports/*.md
@@ -29,6 +34,8 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
 *.log
 
 # ── Logs da aplicação ─────────────────────────────────────────────────────────
@@ -45,7 +52,31 @@ logs/
 Thumbs.db
 
 # ── Dados sensíveis ───────────────────────────────────────────────────────────
+# leads.csv é gerado em runtime quando auth falha (ver ADR-008)
 data/leads.csv
+
+# ── Bancos SQLite gerados em runtime (staging + observabilidade + lições) ────
+# NUNCA versionar: podem ter PII de testes, decisões do curador, etc.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+banco_agil.db
+data/*.db
+
+# ── Chaves e segredos (segurança) ─────────────────────────────────────────────
+*.pem
+*.key
+*.pfx
+*.crt
+id_rsa
+id_ed25519
+
+# ── Backups e temporários ─────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.orig
+*.rej
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
 # O frontend/  tem seu próprio .gitignore — aqui só reforçamos o essencial

@@ -8,80 +8,83 @@ from __future__ import annotations
 import logging
 
 from langgraph.graph import END, StateGraph
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 
 from src.agents.cambio import no_cambio
 from src.agents.credito import no_credito
 from src.agents.entrevista import no_entrevista
 from src.agents.triagem import no_triagem  # noqa: E402 — módulos com __init__.py
-from src.config import GEMINI_API_KEY, GEMINI_MODEL
 from src.infrastructure.checkpointer import criar_checkpointer
-from src.infrastructure.qdrant_memory import salvar_interacao
+from src.infrastructure.staging_store import staging_store
 from src.models.state import BancoAgilState
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_RESUMO = """\
-Você é um assistente interno do Banco Ágil. Sua tarefa é criar um resumo conciso \
-da conversa abaixo para ser armazenado como memória do cliente.
 
-O resumo deve conter em 2-4 frases:
-- O que o cliente solicitou
-- Quais agentes atenderam (triagem, crédito, entrevista, câmbio)
-- O resultado final (aprovado, negado, informação fornecida, etc.)
+def _extrair_ultima_mensagem_usuario(state: BancoAgilState) -> str:
+    """Retorna o último HumanMessage para contextualizar o turno no staging."""
+    for msg in reversed(state.get("messages", [])):
+        if isinstance(msg, HumanMessage):
+            return (msg.content or "").strip()
+    return ""
 
-Seja direto e factual. Não use bullet points.
-"""
+
+def no_registrar_turno(state: BancoAgilState) -> dict:
+    """Grava o turno atual no staging para curadoria assíncrona (ADR-023).
+
+    Executa APÓS o agente produzir resposta_final e ANTES do END.
+    Captura:
+      - Pergunta do usuário + resposta do agente
+      - Agente ativo + intenção detectada
+      - CPF (se autenticado) + session_id (thread_id do LangGraph)
+
+    Falhas são silenciosas: a curadoria NUNCA pode quebrar o chat.
+    Turnos sem cliente autenticado (fase de triagem inicial) são ignorados —
+    não há CPF para isolar e não carregam sinal de negócio.
+    """
+    resposta = state.get("resposta_final")
+    cliente = state.get("cliente_autenticado")
+
+    # Sentinela "skipped" impede loop no router quando não há o que registrar
+    # (ex.: falha de auth sem cliente_autenticado). O router só sai do staging
+    # quando turno_id é truthy — precisa retornar algo != None.
+    if not resposta or not cliente:
+        return {"turno_id": "skipped"}
+
+    cpf = (cliente.get("cpf") or "").strip()
+    if not cpf:
+        return {"turno_id": "skipped"}
+
+    session_id = state.get("session_id") or "desconhecido"
+
+    turno_id = staging_store.registrar_turno_sync(
+        cpf=cpf,
+        session_id=session_id,
+        user_message=_extrair_ultima_mensagem_usuario(state),
+        agent_response=resposta,
+        agent_name=state.get("agente_ativo", "triagem"),
+        intent=state.get("intent_detectada"),
+    )
+
+    if turno_id:
+        logger.debug(
+            "[STAGING] Turno registrado | id=%s | agente=%s | intent=%s",
+            turno_id[:8], state.get("agente_ativo"), state.get("intent_detectada"),
+        )
+
+    # Se o staging falhou, ainda marca "skipped" para não entrar em loop no router.
+    return {"turno_id": turno_id or "skipped"}
 
 
 def no_salvar_memoria(state: BancoAgilState) -> dict:
-    """Gera um resumo semântico da sessão e persiste no Qdrant antes do END.
+    """No-op de encerramento — apenas marca a sessão como finalizada.
 
-    Só executa se o cliente estava autenticado e a memória ainda não foi salva.
-    Falhas são logadas mas não interrompem o encerramento da conversa.
+    Antigamente gerava um resumo via LLM e persistia no Qdrant
+    (`banco_agil_memoria_cliente`). Com o ADR-023 paramos de salvar dados
+    do cliente na memória semântica, então esse nó virou apenas um ponto
+    de terminação do grafo. Mantido para não mexer na topologia e para que
+    o `router` ainda tenha uma transição coerente (`encerrado + memoria_salva`).
     """
-    cliente = state.get("cliente_autenticado")
-    if not cliente or state.get("memoria_salva"):
-        return {"memoria_salva": True}
-
-    cpf = cliente.get("cpf", "")
-    if not cpf:
-        return {"memoria_salva": True}
-
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            temperature=0,
-            google_api_key=GEMINI_API_KEY,
-            max_output_tokens=300,
-        )
-        historico = "\n".join(
-            f"{'Cliente' if isinstance(m, HumanMessage) else 'Agente'}: {m.content}"
-            for m in state.get("messages", [])
-            if hasattr(m, "content") and m.content
-        )
-        resumo_msg = llm.invoke([
-            SystemMessage(content=_PROMPT_RESUMO),
-            HumanMessage(content=historico[-3000:]),
-        ])
-        resumo = resumo_msg.content.strip()
-
-        agentes = list({
-            state.get("agente_ativo", "triagem"),
-            "triagem",
-        })
-
-        salvar_interacao(
-            cpf=cpf,
-            resumo=resumo,
-            agentes_usados=agentes,
-            resultado="sessão encerrada",
-        )
-        logger.info("Memória da sessão salva para CPF %s", cpf[-4:])
-    except Exception as exc:
-        logger.error("Falha ao salvar memória da sessão: %s", exc)
-
     return {"memoria_salva": True}
 
 
@@ -92,12 +95,16 @@ def router(state: BancoAgilState) -> str:
     nos campos do estado. Ver ADR-003 para justificativa.
 
     Contrato de saída (resposta_final):
-      resposta_final = str  → agente produziu resposta → END
+      resposta_final = str  → agente produziu resposta → registrar_turno → END
       resposta_final = None → agente apenas roteou    → continuar roteamento
 
     Fluxo de encerramento:
       encerrado=True + memoria_salva=False → salvar_memoria → END
       encerrado=True + memoria_salva=True  → END
+
+    Captura para curadoria (ADR-023):
+      Toda resposta final passa por `registrar_turno` antes do END,
+      gravando evento estruturado no staging para o worker curador.
     """
     if state.get("encerrado"):
         if not state.get("memoria_salva"):
@@ -106,6 +113,9 @@ def router(state: BancoAgilState) -> str:
 
     # ── Contrato explícito: agente sinalizou que tem uma resposta final ───────
     if state.get("resposta_final") is not None:
+        # Se ainda não registrou o turno, passa pelo staging primeiro.
+        if not state.get("turno_id"):
+            return "registrar_turno"
         return END
 
     # ── Turno em andamento: rotear para o agente correto ─────────────────────
@@ -135,6 +145,7 @@ def criar_grafo():
     workflow.add_node("agente_credito", no_credito)
     workflow.add_node("agente_entrevista", no_entrevista)
     workflow.add_node("agente_cambio", no_cambio)
+    workflow.add_node("registrar_turno", no_registrar_turno)
     workflow.add_node("salvar_memoria", no_salvar_memoria)
 
     # Ponto de entrada: sempre começa pela triagem
@@ -143,6 +154,9 @@ def criar_grafo():
     # Edges condicionais: após cada nó de agente, o router decide o próximo
     for agente in ["agente_triagem", "agente_credito", "agente_entrevista", "agente_cambio"]:
         workflow.add_conditional_edges(agente, router)
+
+    # registrar_turno passa pelo router — que já lê turno_id e manda para END
+    workflow.add_conditional_edges("registrar_turno", router)
 
     # salvar_memoria sempre vai para END — não precisa de router
     workflow.add_edge("salvar_memoria", END)
