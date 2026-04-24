@@ -294,19 +294,36 @@ pytest -q
 python simulador/main.py --all            # suite de cenários end-to-end
 ```
 
-### Deploy em VPS
+### Deploy em VPS (Docker Compose self-contained)
 
-Guia completo em [`deploy/DEPLOY.md`](deploy/DEPLOY.md) — otimizado para **VPS de 1GB RAM** (criação de swap, reaproveitamento de containers de banco existentes, worker como cron, build do frontend servido por nginx compartilhado).
+A stack sobe em 5 containers isolados, orquestrados por `docker-compose.yml`:
 
-Resumo:
+| Container | Imagem | Função |
+|---|---|---|
+| `banco-agil-qdrant` | `qdrant/qdrant:latest` | Memória vetorial (ADR-023) |
+| `banco-agil-redis` | `redis:7-alpine` | Estado de sessão (LangGraph checkpoint) |
+| `banco-agil-backend` | build local (Python) | FastAPI + grafo de agentes |
+| `banco-agil-frontend` | build local (nginx) | Frontend estático + proxy reverso `/api/*` |
+| `banco-agil-worker` | build local (Python) | Curador; sob demanda via `profiles: [cron]` |
+
+Subir:
 
 ```bash
-# Na VPS, uma única vez:
-sudo bash deploy/setup-swap.sh          # 2GB de swap
-cp .env.example .env && nano .env       # preenche chaves
-docker compose up -d backend            # backend sobe
-# worker roda via cron a cada 15min (ver DEPLOY.md)
+# Uma única vez:
+cp .env.example .env && nano .env       # preenche GEMINI_API_KEY, TAVILY_API_KEY, etc.
+# Se a porta 80 já estiver em uso, ajuste HTTP_PORT no .env
+
+docker compose up -d                    # sobe qdrant, redis, backend e frontend
+docker compose exec backend python scripts/setup_qdrant.py
+docker compose exec backend python scripts/seed_patterns.py
+
+# Worker rodando sob demanda (via cron a cada 15min, por exemplo):
+docker compose run --rm worker
 ```
+
+Só a porta do `frontend/nginx` (`HTTP_PORT`, default 80) é exposta publicamente. Backend e Qdrant são expostos apenas em `127.0.0.1` para debug/demo via SSH tunnel. Redis fica totalmente privado.
+
+Em VPS com 1-2GB de RAM: rode `sudo bash deploy/setup-swap.sh` antes do compose para criar 2GB de swap.
 
 ---
 

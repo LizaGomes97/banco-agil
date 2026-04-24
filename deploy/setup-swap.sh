@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Cria um swapfile de 2GB em VPS com pouca RAM (ex.: 1GB).
+# Cria um swapfile de 2GB em VPS com pouca RAM (recomendado em <= 2GB).
 # Idempotente — se já houver swap suficiente, sai sem mudar nada.
 #
 # Uso:
 #   sudo bash deploy/setup-swap.sh
+#
+# Quando usar:
+#   - VPS de 1-2GB RAM: ESSENCIAL, evita OOM kill em picos.
+#   - VPS de 4GB+: OPCIONAL, não faz mal mas raramente é usado.
 #
 # O que faz:
 #   1. Verifica se já existe swap; se houver >=1G, sai.

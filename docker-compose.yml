@@ -1,65 +1,167 @@
-# Stack do Banco Ágil para VPS de 1GB RAM.
+# Stack completa e self-contained do Banco Ágil.
 #
-# ESTRATÉGIA DE MEMÓRIA:
-#   - Qdrant, Redis e (opcional) Postgres já existem como containers separados
-#     na VPS e são reaproveitados via rede externa `banco-agil-net`.
-#   - Nginx também já existe; servimos o build do frontend pelo nginx legado
-#     (ver deploy/nginx-banco-agil.conf).
-#   - Apenas `backend` sobe como container persistente neste compose.
-#   - `worker` está definido mas NÃO sobe automaticamente (profile: cron).
-#     Executar via crontab: `docker compose run --rm worker`.
+# Serviços orquestrados (5 containers isolados, 1 rede interna):
+#   qdrant    — memória vetorial de padrões aprendidos (ADR-023)
+#   redis     — checkpointing de sessão do LangGraph
+#   backend   — FastAPI + grafo de agentes (api/main.py)
+#   frontend  — build React + nginx servindo estático e fazendo proxy de /api/*
+#   worker    — curador (rodado sob demanda via cron externo)
 #
-# Comandos úteis:
-#   docker compose up -d backend
-#   docker compose run --rm worker          # 1 batch de curadoria e sai
-#   docker compose logs -f backend
-#   docker compose down
+# Portas expostas na VPS:
+#   HTTP_PORT (default 80) → frontend/nginx — ÚNICA porta pública
+#   127.0.0.1:8000         → backend (só localhost, pra debug via SSH tunnel)
+#   127.0.0.1:6333         → qdrant dashboard (só localhost, pra demo/inspeção)
+#
+# Subir tudo:
+#   docker compose up -d
+# Rodar worker 1x:
+#   docker compose run --rm worker
+# Conferir saúde:
+#   docker compose ps
+#   docker stats --no-stream
 
 name: banco-agil
 
+# ── Blocos reutilizáveis ─────────────────────────────────────────────────────
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: banco-agil:latest
-    container_name: banco-agil-backend
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Qdrant — banco vetorial (memória aprendida)
+  # ──────────────────────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: banco-agil-qdrant
     restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      # Dentro da rede Docker, os bancos têm os nomes dos seus containers.
-      # Ajuste se os containers existentes tiverem outros nomes.
-      REDIS_HOST: ${REDIS_HOST:-consciencia-coletiva-redis-1}
-      QDRANT_URL: ${QDRANT_URL:-http://consciencia-coletiva-qdrant-1:6333}
     volumes:
-      # Persistência do SQLite (staging + observabilidade + lições)
-      - banco-agil-data:/app/data
-      # Logs da aplicação (opcional, útil pra debug)
-      - ./logs:/app/logs
-    # Limites de memória — CRÍTICO em VPS de 1GB
-    # (reservation = garantido, limit = teto)
-    mem_reservation: 256M
-    mem_limit: 450M
-    memswap_limit: 600M
-    cpus: "0.8"
-    # Rede compartilhada com os containers de banco legados
+      - qdrant-data:/qdrant/storage
     networks:
       - banco-agil-net
-    # Não expomos porta direto — o nginx da VPS faz proxy.
-    # Descomente se quiser testar direto (curl http://IP:8000/api/health):
-    # ports:
-    #   - "127.0.0.1:8000:8000"
+    ports:
+      # Apenas loopback: acessível só da VPS (ou via SSH tunnel).
+      # Dashboard: http://localhost:6333/dashboard (via tunnel)
+      - "127.0.0.1:6333:6333"
+    mem_reservation: 200M
+    mem_limit: 500M
+    logging: *default-logging
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      # Qdrant retorna 200 em GET / com JSON de metadata
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 30s
       retries: 3
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Redis — estado de sessão (checkpointing LangGraph)
+  # Volátil por design: TTL de 30min, sessões não persistem entre restarts.
+  # ──────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: banco-agil-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --maxmemory
+      - "50mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    networks:
+      - banco-agil-net
+    mem_reservation: 20M
+    mem_limit: 80M
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Backend — FastAPI + LangGraph (hot path do chat)
+  # ──────────────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: banco-agil-backend:latest
+    container_name: banco-agil-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Estas variáveis SEMPRE vencem o que está no .env (nomes internos da rede)
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - banco-agil-data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - banco-agil-net
+    ports:
+      # Só loopback: permite curl direto do host pra isolar bugs backend × nginx
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_reservation: 300M
+    mem_limit: 700M
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Frontend — nginx servindo o build Vite e fazendo reverse proxy do backend
+  # O próprio Dockerfile em frontend/ faz build multi-stage (node → nginx).
+  # ──────────────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /
+    image: banco-agil-frontend:latest
+    container_name: banco-agil-frontend
+    restart: unless-stopped
+    ports:
+      # ÚNICA porta pública. Se 80 estiver ocupada, defina HTTP_PORT no .env.
+      - "${HTTP_PORT:-80}:80"
+    networks:
+      - banco-agil-net
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_reservation: 10M
+    mem_limit: 64M
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Worker — curador (ADR-023). NÃO sobe por padrão.
+  # Executar pelo cron da VPS: docker compose run --rm worker
+  # ──────────────────────────────────────────────────────────────────────────
   worker:
-    # Mesma imagem do backend — só muda o comando.
-    image: banco-agil:latest
+    image: banco-agil-backend:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -67,32 +169,36 @@ services:
     env_file:
       - .env
     environment:
-      REDIS_HOST: ${REDIS_HOST:-consciencia-coletiva-redis-1}
-      QDRANT_URL: ${QDRANT_URL:-http://consciencia-coletiva-qdrant-1:6333}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      QDRANT_URL: http://qdrant:6333
     volumes:
       - banco-agil-data:/app/data
       - ./logs:/app/logs
-    # Roda uma vez e sai (--once). Invocado via cron externo.
     command: ["python", "-m", "src.worker.curator", "--once", "--batch-size", "5"]
-    # Limites apertados — só vive por ~30s a cada rodada
-    mem_reservation: 200M
-    mem_limit: 400M
-    memswap_limit: 550M
-    cpus: "0.8"
     networks:
       - banco-agil-net
-    # Só sobe quando invocado explicitamente
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_reservation: 200M
+    mem_limit: 500M
+    logging: *default-logging
     profiles:
       - cron
     restart: "no"
 
+# ── Volumes persistentes ─────────────────────────────────────────────────────
 volumes:
+  qdrant-data:
+    name: banco-agil-qdrant-data
   banco-agil-data:
     name: banco-agil-data
 
+# ── Rede privada interna ─────────────────────────────────────────────────────
 networks:
   banco-agil-net:
     name: banco-agil-net
-    # Cria nova rede; os containers existentes (qdrant/redis) serão anexados
-    # manualmente via `docker network connect banco-agil-net <container>`
     driver: bridge
